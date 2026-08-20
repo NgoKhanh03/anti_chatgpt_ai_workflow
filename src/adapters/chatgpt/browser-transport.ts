@@ -128,6 +128,15 @@ export function extractConversationId(url: string): string | undefined {
   }
 }
 
+export function isNewAssistantResponse(
+  beforeCount: number,
+  beforeText: string,
+  currentCount: number,
+  currentText: string,
+): boolean {
+  return Boolean(currentText) && (currentCount > beforeCount || currentText !== beforeText);
+}
+
 export class ChromeCdpChatGptBrowserTransport implements ReviewerTransport {
   private readonly options: Required<Pick<ChatGptBrowserOptions, 'chatUrl' | 'timeoutMs' | 'settleMs' | 'newChatPerReview' | 'persistentConnection'>> & ChatGptBrowserOptions;
   private persistentClient?: RawCdpClient;
@@ -344,10 +353,14 @@ export class ChromeCdpChatGptBrowserTransport implements ReviewerTransport {
 
       const prompt = buildBrowserReviewPrompt(request);
       const before = await client.send('Runtime.evaluate', {
-        expression: `document.querySelectorAll('[data-message-author-role="assistant"]').length`,
+        expression: `(() => {
+          const els = [...document.querySelectorAll('[data-message-author-role="assistant"]')];
+          return { count: els.length, text: (els.at(-1)?.innerText || '').trim() };
+        })()`,
         returnByValue: true,
       }, sessionId);
-      const beforeCount = Number(before.result?.value ?? 0);
+      const beforeCount = Number(before.result?.value?.count ?? 0);
+      const beforeText = String(before.result?.value?.text ?? '');
 
       const encoded = JSON.stringify(prompt);
       const fill = await client.send('Runtime.evaluate', {
@@ -416,7 +429,7 @@ export class ChromeCdpChatGptBrowserTransport implements ReviewerTransport {
         const text = String(value.text ?? '');
         const count = Number(value.count ?? 0);
         conversationId = extractConversationId(String(value.href ?? '')) ?? conversationId;
-        if (count <= beforeCount || !text) continue;
+        if (!isNewAssistantResponse(beforeCount, beforeText, count, text)) continue;
         if (text !== lastText) {
           lastText = text;
           stableSince = Date.now();

@@ -3,6 +3,7 @@ export {
   buildConversationUrl,
   ChromeCdpChatGptBrowserTransport,
   extractConversationId,
+  isNewAssistantResponse,
   PlaywrightChatGptBrowserTransport,
   buildBrowserReviewPrompt,
 } from './browser-transport.js';
