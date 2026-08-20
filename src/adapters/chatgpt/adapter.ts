@@ -11,11 +11,11 @@ export class ChatGptReviewerAdapter {
     private readonly systemPrompt = DEFAULT_REVIEWER_PROMPT,
   ) {}
 
-  async review(handoff: PrHandoffPacket): Promise<ReviewResult> {
+  async review(handoff: PrHandoffPacket, scopedContextMarkdown?: string): Promise<ReviewResult> {
     const response = await this.transport.review({
       systemPrompt: this.systemPrompt,
       handoff,
-      handoffMarkdown: renderHandoffMarkdown(handoff),
+      handoffMarkdown: scopedContextMarkdown ?? renderHandoffMarkdown(handoff),
     });
 
     return parseReviewResponse(response);
