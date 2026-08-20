@@ -5,6 +5,7 @@ import {
   deterministicChecksPassed,
   hasCommit,
 } from '../dist/adapters/index.js';
+import { ScopePolicyError } from '../dist/policy/index.js';
 
 const task = {
   task: {
@@ -75,4 +76,37 @@ test('validates deterministic checks and commit', () => {
 
   result.checks.tests = 'FAIL';
   assert.equal(deterministicChecksPassed(result), false);
+});
+
+test('enforces task file scope after Antigravity execution', async () => {
+  const scopedTask = {
+    ...task,
+    scope: {
+      expectedFiles: ['src/demo.ts'],
+      allowedWriteRoots: ['src/'],
+    },
+  };
+  const outOfScope = passingResult();
+  outOfScope.changedFiles = ['.github/workflows/release.yml'];
+
+  const adapter = new AntigravityAdapter(new FakeTransport(outOfScope));
+  await assert.rejects(adapter.implement(scopedTask), ScopePolicyError);
+});
+
+test('requires human approval for unapproved scope expansion', async () => {
+  const scopedTask = {
+    ...task,
+    scope: {
+      expectedFiles: ['src/demo.ts'],
+      allowedWriteRoots: ['src/'],
+    },
+  };
+  const expanded = passingResult();
+  expanded.changedFiles = ['src/demo.ts', 'src/helper.ts'];
+
+  const adapter = new AntigravityAdapter(new FakeTransport(expanded));
+  await assert.rejects(
+    adapter.implement(scopedTask),
+    (error) => error instanceof ScopePolicyError && error.evaluation.decision === 'NEEDS_HUMAN',
+  );
 });
