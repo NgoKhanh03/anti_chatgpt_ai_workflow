@@ -52,6 +52,10 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && req.url === '/review') {
       const request = await readJson(req) as ChatGptReviewRequest;
       beginStreamingJson(res);
+      const heartbeat = setInterval(() => {
+        if (!res.writableEnded) res.write('\n');
+      }, 15_000);
+      res.once('close', () => clearInterval(heartbeat));
       const projectId = request.projectContext?.projectId;
       const conversationId = request.projectContext?.conversationId ?? (
         projectId ? await conversationStore.get(projectId) : undefined
@@ -65,6 +69,7 @@ const server = http.createServer(async (req, res) => {
       if (projectId && result.conversationId) {
         await conversationStore.set(projectId, result.conversationId);
       }
+      clearInterval(heartbeat);
       res.end(JSON.stringify(result));
       return;
     }

@@ -26,12 +26,19 @@ export class BrowserAgentClientTransport implements ReviewerTransport {
         signal: controller.signal,
       });
 
-      const payload = await response.json().catch(() => null) as { response?: string; error?: string } | null;
+      const body = await response.text();
+      const payload = (() => {
+        try {
+          return JSON.parse(body) as { response?: string; error?: string };
+        } catch {
+          return null;
+        }
+      })();
       if (!response.ok || payload?.error) {
         throw new Error(payload?.error ?? `Browser agent returned HTTP ${response.status}`);
       }
       if (typeof payload?.response !== 'string') {
-        throw new Error('Browser agent returned an invalid response payload.');
+        throw new Error(`Browser agent returned an invalid response payload: ${body.slice(0, 200)}`);
       }
       return payload.response;
     } finally {

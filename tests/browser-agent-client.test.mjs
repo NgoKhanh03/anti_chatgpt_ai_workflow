@@ -40,3 +40,21 @@ test('browser agent client rejects a streamed error payload', async () => {
     server.close();
   }
 });
+
+test('browser agent client accepts heartbeat whitespace before JSON', async () => {
+  const server = http.createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json', 'transfer-encoding': 'chunked' });
+    res.flushHeaders();
+    res.write('\n\n');
+    res.end(JSON.stringify({ response: '{"verdict":"APPROVE","issues":[]}' }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const address = server.address();
+    const transport = new BrowserAgentClientTransport({ baseUrl: `http://127.0.0.1:${address.port}`, timeoutMs: 5000 });
+    const result = await transport.review({ systemPrompt: 'review', handoff: {}, handoffMarkdown: '# handoff' });
+    assert.equal(result, '{"verdict":"APPROVE","issues":[]}');
+  } finally {
+    server.close();
+  }
+});
