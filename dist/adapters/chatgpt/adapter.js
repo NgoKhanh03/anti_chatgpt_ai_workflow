@@ -8,11 +8,12 @@ export class ChatGptReviewerAdapter {
         this.transport = transport;
         this.systemPrompt = systemPrompt;
     }
-    async review(handoff, scopedContextMarkdown) {
+    async review(handoff, scopedContextMarkdown, projectContext) {
         const response = await this.transport.review({
             systemPrompt: this.systemPrompt,
             handoff,
             handoffMarkdown: scopedContextMarkdown ?? renderHandoffMarkdown(handoff),
+            projectContext,
         });
         return parseReviewResponse(response);
     }

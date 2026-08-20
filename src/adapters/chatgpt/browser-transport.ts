@@ -14,6 +14,11 @@ export interface ChatGptBrowserOptions {
   persistentConnection?: boolean;
 }
 
+export interface BrowserReviewResult {
+  response: string;
+  conversationId?: string;
+}
+
 type CdpResult = Record<string, any>;
 
 class RawCdpClient {
@@ -86,8 +91,40 @@ export function buildBrowserReviewPrompt(
   const handoffMarkdown = typeof requestOrSystemPrompt === 'string'
     ? (handoff ?? '')
     : requestOrSystemPrompt.handoffMarkdown;
+  const projectContext = typeof requestOrSystemPrompt === 'string'
+    ? undefined
+    : requestOrSystemPrompt.projectContext;
+  const contextMarkdown = projectContext
+    ? [
+        '--- PROJECT CONTEXT ---',
+        `Project ID: ${projectContext.projectId}`,
+        '',
+        '## Project Overview',
+        projectContext.overview || '(not provided)',
+        '',
+        '## Project Progress',
+        projectContext.progress || '(not provided)',
+        '',
+      ].join('\n')
+    : '';
 
-  return `${systemPrompt}\n\n--- PR HANDOFF ---\n${handoffMarkdown}\n\nReturn the Review Contract JSON only. The response MUST be syntactically valid JSON parseable by JSON.parse. Escape every double quote that appears inside a JSON string value. Do not use Markdown fences, comments, trailing commas, or any text before or after the JSON object.`;
+  return `${systemPrompt}\n\n${contextMarkdown}--- PR HANDOFF ---\n${handoffMarkdown}\n\nReturn the Review Contract JSON only. The response MUST be syntactically valid JSON parseable by JSON.parse. Escape every double quote that appears inside a JSON string value. Do not use Markdown fences, comments, trailing commas, or any text before or after the JSON object.`;
+}
+
+export function buildConversationUrl(chatUrl: string, conversationId?: string): string {
+  if (!conversationId) return chatUrl;
+  if (!/^[a-zA-Z0-9-]+$/.test(conversationId)) {
+    throw new Error(`Invalid ChatGPT conversation ID: ${conversationId}`);
+  }
+  return new URL(`/c/${conversationId}`, chatUrl).toString();
+}
+
+export function extractConversationId(url: string): string | undefined {
+  try {
+    return new URL(url).pathname.match(/^\/c\/([a-zA-Z0-9-]+)\/?$/)?.[1];
+  } catch {
+    return undefined;
+  }
 }
 
 export class ChromeCdpChatGptBrowserTransport implements ReviewerTransport {
@@ -133,6 +170,10 @@ export class ChromeCdpChatGptBrowserTransport implements ReviewerTransport {
   }
 
   async review(request: ChatGptReviewRequest): Promise<string> {
+    return (await this.reviewWithMetadata(request)).response;
+  }
+
+  async reviewWithMetadata(request: ChatGptReviewRequest): Promise<BrowserReviewResult> {
     const systemPrompt = request.systemPrompt;
     const handoff = request.handoffMarkdown;
     const client = await this.acquireClient();
@@ -149,7 +190,7 @@ export class ChromeCdpChatGptBrowserTransport implements ReviewerTransport {
       // cookies, account and browser context without launching another browser.
       const anchorTarget = targets[0];
       let target = anchorTarget;
-      if (this.options.newChatPerReview) {
+      if (this.options.newChatPerReview || request.projectContext?.conversationId) {
         const existingTargetIds = new Set((targetInfos ?? []).map((t: any) => t.targetId));
         const { sessionId: anchorSessionId } = await client.send('Target.attachToTarget', {
           targetId: anchorTarget.targetId,
@@ -157,8 +198,12 @@ export class ChromeCdpChatGptBrowserTransport implements ReviewerTransport {
         });
         await client.send('Runtime.enable', {}, anchorSessionId);
 
+        const reviewUrl = buildConversationUrl(
+          this.options.chatUrl,
+          request.projectContext?.conversationId,
+        );
         const openResult = await client.send('Runtime.evaluate', {
-          expression: `window.open(${JSON.stringify(this.options.chatUrl)}, '_blank') !== null`,
+          expression: `window.open(${JSON.stringify(reviewUrl)}, '_blank') !== null`,
           returnByValue: true,
           userGesture: true,
         }, anchorSessionId);
@@ -289,26 +334,30 @@ export class ChromeCdpChatGptBrowserTransport implements ReviewerTransport {
       const deadline = Date.now() + this.options.timeoutMs;
       let lastText = '';
       let stableSince = 0;
+      let conversationId = request.projectContext?.conversationId;
 
       while (Date.now() < deadline) {
         await new Promise(resolve => setTimeout(resolve, 750));
         const response = await client.send('Runtime.evaluate', {
           expression: `(() => {
             const els = [...document.querySelectorAll('[data-message-author-role="assistant"]')];
-            return { count: els.length, text: (els.at(-1)?.innerText || '').trim() };
+            return { count: els.length, text: (els.at(-1)?.innerText || '').trim(), href: location.href };
           })()`,
           returnByValue: true,
         }, sessionId);
         const value = response.result?.value ?? {};
         const text = String(value.text ?? '');
         const count = Number(value.count ?? 0);
+        conversationId = extractConversationId(String(value.href ?? '')) ?? conversationId;
         if (count <= beforeCount || !text) continue;
         if (text !== lastText) {
           lastText = text;
           stableSince = Date.now();
           continue;
         }
-        if (stableSince && Date.now() - stableSince >= this.options.settleMs) return text;
+        if (stableSince && Date.now() - stableSince >= this.options.settleMs) {
+          return { response: text, conversationId };
+        }
       }
 
       throw new Error(`Timed out waiting for ChatGPT review response after ${this.options.timeoutMs}ms`);

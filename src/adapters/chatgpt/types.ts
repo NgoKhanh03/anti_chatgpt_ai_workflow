@@ -18,8 +18,16 @@ export interface ReviewResult {
   issues: ReviewIssue[];
 }
 
+export interface ProjectReviewContext {
+  projectId: string;
+  overview?: string;
+  progress?: string;
+  conversationId?: string;
+}
+
 export interface ChatGptReviewRequest {
   systemPrompt: string;
   handoff: PrHandoffPacket;
   handoffMarkdown: string;
+  projectContext?: ProjectReviewContext;
 }

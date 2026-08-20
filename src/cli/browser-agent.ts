@@ -1,9 +1,13 @@
 import http from 'node:http';
 import { ChromeCdpChatGptBrowserTransport } from '../adapters/chatgpt/browser-transport.js';
 import type { ChatGptReviewRequest } from '../adapters/chatgpt/types.js';
+import { ProjectConversationStore } from '../persistence/index.js';
 
 const host = process.env.CHATGPT_AGENT_HOST ?? '127.0.0.1';
 const port = Number.parseInt(process.env.CHATGPT_AGENT_PORT ?? '4317', 10);
+const conversationStore = new ProjectConversationStore(
+  process.env.CHATGPT_CONVERSATION_STORE ?? '.ai/project-conversations.json',
+);
 
 const transport = new ChromeCdpChatGptBrowserTransport({
   cdpUrl: process.env.CHATGPT_CDP_URL,
@@ -38,8 +42,20 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'POST' && req.url === '/review') {
       const request = await readJson(req) as ChatGptReviewRequest;
-      const response = await transport.review(request);
-      json(res, 200, { response });
+      const projectId = request.projectContext?.projectId;
+      const conversationId = request.projectContext?.conversationId ?? (
+        projectId ? await conversationStore.get(projectId) : undefined
+      );
+      const result = await transport.reviewWithMetadata({
+        ...request,
+        projectContext: request.projectContext
+          ? { ...request.projectContext, conversationId }
+          : undefined,
+      });
+      if (projectId && result.conversationId) {
+        await conversationStore.set(projectId, result.conversationId);
+      }
+      json(res, 200, result);
       return;
     }
 

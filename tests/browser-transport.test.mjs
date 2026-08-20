@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  buildConversationUrl,
   buildBrowserReviewPrompt,
+  extractConversationId,
   loadReviewerConfig,
 } from '../dist/adapters/index.js';
 
@@ -38,4 +40,25 @@ test('builds strict browser review prompt with PR handoff', () => {
   assert.match(prompt, /You are reviewer/);
   assert.match(prompt, /Return the Review Contract JSON only/);
   assert.match(prompt, /PR: #8/);
+});
+
+test('includes project overview and progress in the review prompt', () => {
+  const prompt = buildBrowserReviewPrompt({
+    ...request,
+    projectContext: {
+      projectId: 'acme/demo',
+      overview: 'Project overview text',
+      progress: 'Project progress text',
+    },
+  });
+  assert.match(prompt, /Project ID: acme\/demo/);
+  assert.match(prompt, /Project overview text/);
+  assert.match(prompt, /Project progress text/);
+});
+
+test('builds and extracts a project conversation URL', () => {
+  const url = buildConversationUrl('https://chatgpt.com/', 'abc-123');
+  assert.equal(url, 'https://chatgpt.com/c/abc-123');
+  assert.equal(extractConversationId(url), 'abc-123');
+  assert.equal(extractConversationId('https://chatgpt.com/'), undefined);
 });

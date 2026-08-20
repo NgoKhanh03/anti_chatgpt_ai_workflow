@@ -11,7 +11,8 @@
     "start": "node dist/cli/index.js",
     "browser:check": "tsx src/cli/browser-check.ts",
     "browser:smoke": "tsx src/cli/live-smoke-review.ts",
-    "browser:agent": "tsx src/cli/browser-agent.ts"
+    "browser:agent": "tsx src/cli/browser-agent.ts",
+    "review:pr": "tsx src/cli/review-pr.ts"
   },
   "devDependencies": {
     "@types/node": "latest",
