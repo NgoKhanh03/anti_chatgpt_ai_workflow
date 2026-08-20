@@ -24,7 +24,7 @@ export function createReviewer(
     return new ChatGptReviewerAdapter(
       overrides.browserTransport ?? new BrowserAgentClientTransport({
         baseUrl: browser?.agentUrl,
-        timeoutMs: browser?.timeoutMs,
+        timeoutMs: browser?.agentRequestTimeoutMs,
       }),
     );
   }

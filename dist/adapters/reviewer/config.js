@@ -21,13 +21,15 @@ export function loadReviewerConfig(env = process.env) {
     if (transport !== 'browser' && transport !== 'openai') {
         throw new Error(`Unsupported REVIEWER_TRANSPORT: ${transport}`);
     }
+    const browserTimeoutMs = positiveInteger(env.CHATGPT_TIMEOUT_MS, 300_000);
     return {
         transport,
         browser: {
             cdpUrl: env.CHATGPT_CDP_URL,
             agentUrl: env.CHATGPT_AGENT_URL ?? 'http://127.0.0.1:4317',
             chatUrl: env.CHATGPT_URL ?? 'https://chatgpt.com/',
-            timeoutMs: positiveInteger(env.CHATGPT_TIMEOUT_MS, 180_000),
+            timeoutMs: browserTimeoutMs,
+            agentRequestTimeoutMs: positiveInteger(env.CHATGPT_AGENT_REQUEST_TIMEOUT_MS, browserTimeoutMs + 15_000),
             settleMs: positiveInteger(env.CHATGPT_SETTLE_MS, 2_500),
             newChatPerReview: booleanValue(env.CHATGPT_NEW_CHAT_PER_REVIEW, true),
         },

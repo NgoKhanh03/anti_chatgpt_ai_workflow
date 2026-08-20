@@ -32,6 +32,8 @@ test('browser reviewer config is default and needs no API key', () => {
   assert.equal(config.transport, 'browser');
   assert.equal(config.browser.cdpUrl, undefined);
   assert.equal(config.browser.newChatPerReview, true);
+  assert.equal(config.browser.timeoutMs, 300000);
+  assert.equal(config.browser.agentRequestTimeoutMs, 315000);
   assert.equal(config.openai.apiKey, undefined);
 });
 

@@ -7,7 +7,7 @@ const conversationStore = new ProjectConversationStore(process.env.CHATGPT_CONVE
 const transport = new ChromeCdpChatGptBrowserTransport({
     cdpUrl: process.env.CHATGPT_CDP_URL,
     chatUrl: process.env.CHATGPT_URL ?? 'https://chatgpt.com/',
-    timeoutMs: Number.parseInt(process.env.CHATGPT_TIMEOUT_MS ?? '180000', 10),
+    timeoutMs: Number.parseInt(process.env.CHATGPT_TIMEOUT_MS ?? '300000', 10),
     settleMs: Number.parseInt(process.env.CHATGPT_SETTLE_MS ?? '2500', 10),
     newChatPerReview: (process.env.CHATGPT_NEW_CHAT_PER_REVIEW ?? 'true') === 'true',
     persistentConnection: true,

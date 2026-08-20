@@ -5,7 +5,7 @@ export function createReviewer(config, overrides = {}) {
         const browser = config.browser;
         return new ChatGptReviewerAdapter(overrides.browserTransport ?? new BrowserAgentClientTransport({
             baseUrl: browser?.agentUrl,
-            timeoutMs: browser?.timeoutMs,
+            timeoutMs: browser?.agentRequestTimeoutMs,
         }));
     }
     if (overrides.openaiTransport) {
