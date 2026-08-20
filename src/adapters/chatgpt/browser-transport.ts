@@ -207,18 +207,24 @@ export class ChromeCdpChatGptBrowserTransport implements ReviewerTransport {
               .filter(Boolean)
               .join(' ');
             const identity = attributes.toLowerCase();
+            const composer = document.querySelector('#prompt-textarea') ||
+              document.querySelector('#mobile-composer-prompt') ||
+              document.querySelector('textarea[aria-label="Chat with ChatGPT"]') ||
+              document.querySelector('textarea[placeholder="Ask anything"]') ||
+              document.querySelector('[contenteditable="true"][data-lexical-editor="true"]');
+            const ready = !!composer && !!(composer.offsetWidth || composer.offsetHeight || composer.getClientRects().length);
             const loggedOut = /Log in to get answers based on saved chats/i.test(text) ||
               [...document.querySelectorAll('button,a')].some(el =>
                 (el.innerText || '').trim() === 'Log in' &&
                 !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length));
             const accountHint = ${JSON.stringify(accountHint ?? '')};
             const accountMatches = !accountHint || identity.includes(accountHint);
-            return { authenticated: accountHint ? accountMatches : !loggedOut, identity };
+            return { ready, authenticated: accountHint ? accountMatches : !loggedOut, identity };
           })()`,
           returnByValue: true,
         }, sessionId);
         const value = inspection.result?.value ?? {};
-        if (value.authenticated && (!accountHint || String(value.identity).includes(accountHint))) {
+        if (value.ready && value.authenticated && (!accountHint || String(value.identity).includes(accountHint))) {
           return target;
         }
       } finally {

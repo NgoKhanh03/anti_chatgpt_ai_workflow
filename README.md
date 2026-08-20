@@ -31,5 +31,10 @@ npm run review:pr -- --pr 12 \
 
 The browser agent stores the project-to-conversation mapping in `.ai/project-conversations.json`. Set `CHATGPT_CONVERSATION_STORE` to use another local path.
 When Chrome exposes multiple ChatGPT accounts, set `CHATGPT_ACCOUNT_HINT` to an account name or email visible in the ChatGPT UI so the agent cannot select another profile accidentally.
+If a long-running project thread becomes too large or its Chrome tab crashes, roll over the active mapping without deleting history:
+
+```bash
+npm run review:pr -- --pr 12 --new-conversation
+```
 
 See `PROJECT_PLAN.md` for architecture and implementation roadmap.
