@@ -16,6 +16,7 @@ const transport = new ChromeCdpChatGptBrowserTransport({
   settleMs: Number.parseInt(process.env.CHATGPT_SETTLE_MS ?? '2500', 10),
   newChatPerReview: (process.env.CHATGPT_NEW_CHAT_PER_REVIEW ?? 'true') === 'true',
   persistentConnection: true,
+  accountHint: process.env.CHATGPT_ACCOUNT_HINT,
 });
 
 function json(res: http.ServerResponse, status: number, payload: unknown): void {

@@ -12,6 +12,7 @@ export interface ChatGptBrowserOptions {
   settleMs?: number;
   newChatPerReview?: boolean;
   persistentConnection?: boolean;
+  accountHint?: string;
 }
 
 export interface BrowserReviewResult {
@@ -169,6 +170,53 @@ export class ChromeCdpChatGptBrowserTransport implements ReviewerTransport {
     return this.createClient();
   }
 
+  private async selectAnchorTarget(
+    client: RawCdpClient,
+    targets: any[],
+    conversationId?: string,
+  ): Promise<any> {
+    const orderedTargets = conversationId
+      ? [
+          ...targets.filter(target => extractConversationId(String(target.url ?? '')) === conversationId),
+          ...targets.filter(target => extractConversationId(String(target.url ?? '')) !== conversationId),
+        ]
+      : targets;
+    const accountHint = this.options.accountHint?.trim().toLowerCase();
+
+    for (const target of orderedTargets) {
+      const { sessionId } = await client.send('Target.attachToTarget', {
+        targetId: target.targetId,
+        flatten: true,
+      });
+      try {
+        await client.send('Runtime.enable', {}, sessionId);
+        const inspection = await client.send('Runtime.evaluate', {
+          expression: `(() => {
+            const text = document.body?.innerText || '';
+            const attributes = [...document.querySelectorAll('[aria-label],[title]')]
+              .flatMap(el => [el.getAttribute('aria-label'), el.getAttribute('title')])
+              .filter(Boolean)
+              .join(' ');
+            const identity = (text + ' ' + attributes).toLowerCase();
+            const loggedOut = /Log in to get answers based on saved chats/i.test(text) ||
+              [...document.querySelectorAll('button,a')].some(el => (el.innerText || '').trim() === 'Log in');
+            return { authenticated: !loggedOut, identity };
+          })()`,
+          returnByValue: true,
+        }, sessionId);
+        const value = inspection.result?.value ?? {};
+        if (value.authenticated && (!accountHint || String(value.identity).includes(accountHint))) {
+          return target;
+        }
+      } finally {
+        await client.send('Target.detachFromTarget', { sessionId }).catch(() => {});
+      }
+    }
+
+    const identity = accountHint ? ` matching account hint "${this.options.accountHint}"` : '';
+    throw new Error(`No authenticated ChatGPT tab${identity} was found in the active Chrome session.`);
+  }
+
   async review(request: ChatGptReviewRequest): Promise<string> {
     return (await this.reviewWithMetadata(request)).response;
   }
@@ -188,9 +236,12 @@ export class ChromeCdpChatGptBrowserTransport implements ReviewerTransport {
       // not allow Target.createTarget(browserContextId) for normal user profiles,
       // so opening from the Profile 2 page itself is what reliably inherits its
       // cookies, account and browser context without launching another browser.
-      const anchorTarget = targets[0];
+      const requestedConversationId = request.projectContext?.conversationId;
+      const anchorTarget = await this.selectAnchorTarget(client, targets, requestedConversationId);
+      const existingConversationTarget = requestedConversationId &&
+        extractConversationId(String(anchorTarget.url ?? '')) === requestedConversationId;
       let target = anchorTarget;
-      if (this.options.newChatPerReview || request.projectContext?.conversationId) {
+      if (!existingConversationTarget && (this.options.newChatPerReview || requestedConversationId)) {
         const existingTargetIds = new Set((targetInfos ?? []).map((t: any) => t.targetId));
         const { sessionId: anchorSessionId } = await client.send('Target.attachToTarget', {
           targetId: anchorTarget.targetId,
@@ -252,10 +303,16 @@ export class ChromeCdpChatGptBrowserTransport implements ReviewerTransport {
             const visible = !!composer && !!(composer.offsetWidth || composer.offsetHeight || composer.getClientRects().length);
             const loggedOut = /Log in to get answers based on saved chats/i.test(text) ||
               [...document.querySelectorAll('button,a')].some(el => (el.innerText || '').trim() === 'Log in');
+            const identity = (text + ' ' + [...document.querySelectorAll('[aria-label],[title]')]
+              .flatMap(el => [el.getAttribute('aria-label'), el.getAttribute('title')])
+              .filter(Boolean)
+              .join(' ')).toLowerCase();
+            const accountHint = ${JSON.stringify(this.options.accountHint?.trim().toLowerCase() ?? '')};
             return {
               readyState: document.readyState,
               ready: visible,
               authenticated: !loggedOut,
+              accountMatches: !accountHint || identity.includes(accountHint),
               href: location.href,
               title: document.title,
             };
@@ -264,7 +321,7 @@ export class ChromeCdpChatGptBrowserTransport implements ReviewerTransport {
         }, sessionId).catch(() => ({ result: { value: null } }));
 
         state = readiness.result?.value ?? null;
-        if (state?.ready && state?.authenticated) break;
+        if (state?.ready && state?.authenticated && state?.accountMatches) break;
         await new Promise(resolve => setTimeout(resolve, 300));
       }
 
@@ -272,7 +329,10 @@ export class ChromeCdpChatGptBrowserTransport implements ReviewerTransport {
         throw new Error(`ChatGPT composer did not become ready in the new Profile 2 chat. Last state: ${JSON.stringify(state)}`);
       }
       if (!state?.authenticated) {
-        throw new Error('The new ChatGPT tab is not authenticated. Use Chrome Profile 2 logged into khanh.ngo.2303@gmail.com.');
+        throw new Error('The selected ChatGPT tab is not authenticated.');
+      }
+      if (!state?.accountMatches) {
+        throw new Error(`The selected ChatGPT tab does not match account hint "${this.options.accountHint}".`);
       }
 
       const prompt = buildBrowserReviewPrompt(request);
