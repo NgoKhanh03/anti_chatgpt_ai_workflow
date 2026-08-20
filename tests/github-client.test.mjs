@@ -26,6 +26,8 @@ class FakeRunner {
           url: 'https://github.com/acme/demo/pull/42',
           headRefName: 'feat/demo',
           baseRefName: 'main',
+          headRefOid: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+          baseRefOid: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
           body: 'Implements demo feature',
           author: { login: 'bot' },
           statusCheckRollup: [{ conclusion: 'SUCCESS' }],
@@ -56,6 +58,7 @@ test('creates PR handoff packet', async () => {
   assert.equal(packet.repository.owner, 'acme');
   assert.equal(packet.pullRequest.number, 42);
   assert.equal(packet.pullRequest.ciState, 'SUCCESS');
+  assert.equal(packet.pullRequest.headSha, 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
   assert.equal(packet.diff.files[0].path, 'a.ts');
 
   const markdown = renderHandoffMarkdown(packet);

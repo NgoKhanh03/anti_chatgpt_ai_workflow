@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { AntigravityAdapter } from '../dist/adapters/index.js';
 import { ReviewLoopCoordinator } from '../dist/orchestrator/index.js';
 import { StateStore } from '../dist/state/index.js';
+import { createApprovalEvidence } from '../dist/review/index.js';
 
 const task = {
   task: {
@@ -26,6 +27,8 @@ function handoff(ciState = 'SUCCESS') {
       url: 'https://github.com/acme/demo/pull/5',
       headRefName: 'feat/demo',
       baseRefName: 'main',
+      headSha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      baseSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       ciState,
     },
     diff: { patch: 'diff', files: [] },
@@ -384,6 +387,10 @@ test('rejects an invalid max iteration policy', async () => {
 test('human approval is required before MERGED', async () => {
   const { dir, store } = await createStore('HUMAN_APPROVAL');
   try {
+    const state = await store.load();
+    state.prNumber = 5;
+    state.approval = createApprovalEvidence(handoff());
+    await store.save(state);
     const coordinator = new ReviewLoopCoordinator(
       new FakeGitHub(),
       new SequenceReviewer([]),
@@ -395,6 +402,32 @@ test('human approval is required before MERGED', async () => {
 
     const merged = await coordinator.approveMerge();
     assert.equal(merged.state, 'MERGED');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('merge rejects approval after PR head changes', async () => {
+  const { dir, store } = await createStore('HUMAN_APPROVAL');
+  try {
+    const state = await store.load();
+    state.prNumber = 5;
+    state.approval = createApprovalEvidence(handoff());
+    await store.save(state);
+
+    const changedHandoff = handoff();
+    changedHandoff.pullRequest.headSha = 'cccccccccccccccccccccccccccccccccccccccc';
+    const github = { async createHandoffPacket() { return changedHandoff; } };
+    const coordinator = new ReviewLoopCoordinator(
+      github,
+      new SequenceReviewer([]),
+      new SequenceReviewer([]),
+      new AntigravityAdapter(new PassingAntigravityTransport()),
+      store,
+      { maxIterations: 5 },
+    );
+
+    await assert.rejects(coordinator.approveMerge(), /Approval is stale/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -17,6 +17,8 @@ const handoff = {
     url: 'https://github.com/example/ai-workflow-smoke/pull/1',
     headRefName: 'smoke/raw-cdp',
     baseRefName: 'main',
+    headSha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    baseSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
     ciState: 'SUCCESS' as const,
   },
   diff: {

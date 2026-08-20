@@ -14,6 +14,8 @@ const handoff = {
     url: 'https://github.com/acme/demo/pull/42',
     headRefName: 'feat/demo',
     baseRefName: 'main',
+    headSha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    baseSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
     ciState: 'SUCCESS',
   },
   diff: {

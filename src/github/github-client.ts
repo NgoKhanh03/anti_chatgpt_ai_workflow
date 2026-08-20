@@ -13,6 +13,8 @@ interface GhPrView {
   url: string;
   headRefName: string;
   baseRefName: string;
+  headRefOid: string;
+  baseRefOid: string;
   body?: string;
   author?: { login?: string };
   statusCheckRollup?: Array<{ conclusion?: string; status?: string }>;
@@ -70,7 +72,10 @@ export class GitHubClient {
   async getPullRequest(prNumber?: number): Promise<PullRequestContext> {
     const args = ['pr', 'view'];
     if (prNumber !== undefined) args.push(String(prNumber));
-    args.push('--json', 'number,title,url,headRefName,baseRefName,body,author,statusCheckRollup');
+    args.push(
+      '--json',
+      'number,title,url,headRefName,baseRefName,headRefOid,baseRefOid,body,author,statusCheckRollup',
+    );
 
     const result = await this.runner.run('gh', args, this.cwd);
     const data = JSON.parse(result.stdout) as GhPrView;
@@ -81,6 +86,8 @@ export class GitHubClient {
       url: data.url,
       headRefName: data.headRefName,
       baseRefName: data.baseRefName,
+      headSha: data.headRefOid,
+      baseSha: data.baseRefOid,
       body: data.body,
       author: data.author?.login,
       ciState: deriveCiState(data.statusCheckRollup),

@@ -33,7 +33,7 @@ export class GitHubClient {
         const args = ['pr', 'view'];
         if (prNumber !== undefined)
             args.push(String(prNumber));
-        args.push('--json', 'number,title,url,headRefName,baseRefName,body,author,statusCheckRollup');
+        args.push('--json', 'number,title,url,headRefName,baseRefName,headRefOid,baseRefOid,body,author,statusCheckRollup');
         const result = await this.runner.run('gh', args, this.cwd);
         const data = JSON.parse(result.stdout);
         return {
@@ -42,6 +42,8 @@ export class GitHubClient {
             url: data.url,
             headRefName: data.headRefName,
             baseRefName: data.baseRefName,
+            headSha: data.headRefOid,
+            baseSha: data.baseRefOid,
             body: data.body,
             author: data.author?.login,
             ciState: deriveCiState(data.statusCheckRollup),

@@ -12,6 +12,8 @@ export interface PullRequestContext {
   url: string;
   headRefName: string;
   baseRefName: string;
+  headSha: string;
+  baseSha: string;
   author?: string;
   body?: string;
   ciState: CiState;

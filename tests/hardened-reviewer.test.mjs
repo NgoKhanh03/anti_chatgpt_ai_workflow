@@ -17,6 +17,8 @@ const request = {
       url: 'https://github.com/acme/demo/pull/7',
       headRefName: 'feat/demo',
       baseRefName: 'main',
+      headSha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      baseSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       ciState: 'SUCCESS',
     },
     diff: { patch: 'diff', files: [] },

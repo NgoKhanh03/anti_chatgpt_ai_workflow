@@ -1,4 +1,5 @@
 import { deterministicChecksPassed, hasCommit, } from '../adapters/antigravity/index.js';
+import { assertApprovalCurrent, createApprovalEvidence } from '../review/index.js';
 import { transition } from './workflow-state.js';
 function isBlocking(issue) {
     return issue.severity === 'P0' || issue.severity === 'P1';
@@ -100,6 +101,7 @@ export class ReviewLoopCoordinator {
             return undefined;
         }
         state.state = transition(state.state, 'AI_APPROVED');
+        state.approval = createApprovalEvidence(cleanHandoff);
         state.state = transition(state.state, 'HUMAN_APPROVAL');
         await this.persist(state);
         return {
@@ -146,6 +148,7 @@ export class ReviewLoopCoordinator {
             if (ciResult)
                 return ciResult;
             const review = await this.reviewer.review(handoff);
+            state.approval = undefined;
             state.iteration += 1;
             this.syncIssues(state, review);
             await this.persist(state);
@@ -176,6 +179,11 @@ export class ReviewLoopCoordinator {
         if (state.state !== 'HUMAN_APPROVAL') {
             throw new Error(`Merge approval requires HUMAN_APPROVAL state, got ${state.state}.`);
         }
+        if (!state.approval || state.prNumber === undefined) {
+            throw new Error('Merge approval requires immutable review evidence.');
+        }
+        const currentHandoff = await this.github.createHandoffPacket(state.prNumber);
+        assertApprovalCurrent(state.approval, currentHandoff);
         state.state = transition(state.state, 'MERGED');
         await this.persist(state);
         return state;
