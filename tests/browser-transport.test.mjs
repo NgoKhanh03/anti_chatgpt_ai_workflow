@@ -4,6 +4,7 @@ import {
   buildConversationUrl,
   buildBrowserReviewPrompt,
   extractConversationId,
+  isNewAssistantResponse,
   loadReviewerConfig,
 } from '../dist/adapters/index.js';
 
@@ -63,4 +64,9 @@ test('builds and extracts a project conversation URL', () => {
   assert.equal(url, 'https://chatgpt.com/c/abc-123');
   assert.equal(extractConversationId(url), 'abc-123');
   assert.equal(extractConversationId('https://chatgpt.com/'), undefined);
+});
+
+test('detects a new response when a reused conversation virtualizes message nodes', () => {
+  assert.equal(isNewAssistantResponse(4, 'old response', 4, 'new response'), true);
+  assert.equal(isNewAssistantResponse(4, 'old response', 4, 'old response'), false);
 });

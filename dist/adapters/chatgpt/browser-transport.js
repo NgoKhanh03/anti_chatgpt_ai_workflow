@@ -98,6 +98,9 @@ export function extractConversationId(url) {
         return undefined;
     }
 }
+export function isNewAssistantResponse(beforeCount, beforeText, currentCount, currentText) {
+    return Boolean(currentText) && (currentCount > beforeCount || currentText !== beforeText);
+}
 export class ChromeCdpChatGptBrowserTransport {
     options;
     persistentClient;
@@ -290,10 +293,14 @@ export class ChromeCdpChatGptBrowserTransport {
             }
             const prompt = buildBrowserReviewPrompt(request);
             const before = await client.send('Runtime.evaluate', {
-                expression: `document.querySelectorAll('[data-message-author-role="assistant"]').length`,
+                expression: `(() => {
+          const els = [...document.querySelectorAll('[data-message-author-role="assistant"]')];
+          return { count: els.length, text: (els.at(-1)?.innerText || '').trim() };
+        })()`,
                 returnByValue: true,
             }, sessionId);
-            const beforeCount = Number(before.result?.value ?? 0);
+            const beforeCount = Number(before.result?.value?.count ?? 0);
+            const beforeText = String(before.result?.value?.text ?? '');
             const encoded = JSON.stringify(prompt);
             const fill = await client.send('Runtime.evaluate', {
                 expression: `(() => {
@@ -359,7 +366,7 @@ export class ChromeCdpChatGptBrowserTransport {
                 const text = String(value.text ?? '');
                 const count = Number(value.count ?? 0);
                 conversationId = extractConversationId(String(value.href ?? '')) ?? conversationId;
-                if (count <= beforeCount || !text)
+                if (!isNewAssistantResponse(beforeCount, beforeText, count, text))
                     continue;
                 if (text !== lastText) {
                     lastText = text;
