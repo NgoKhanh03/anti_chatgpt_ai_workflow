@@ -1,0 +1,11 @@
+max_iterations: 5
+merge_blocking:
+  - P0
+  - P1
+non_blocking:
+  - P2
+  - P3
+require:
+  ci_green: true
+  clean_room_review: true
+  human_merge_approval: true
