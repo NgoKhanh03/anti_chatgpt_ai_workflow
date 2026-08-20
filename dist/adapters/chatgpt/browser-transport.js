@@ -295,12 +295,20 @@ export class ChromeCdpChatGptBrowserTransport {
             const before = await client.send('Runtime.evaluate', {
                 expression: `(() => {
           const els = [...document.querySelectorAll('[data-message-author-role="assistant"]')];
-          return { count: els.length, text: (els.at(-1)?.innerText || '').trim() };
+          const users = [...document.querySelectorAll('[data-message-author-role="user"]')];
+          return {
+            count: els.length,
+            text: (els.at(-1)?.innerText || '').trim(),
+            userCount: users.length,
+            userText: (users.at(-1)?.innerText || '').trim(),
+          };
         })()`,
                 returnByValue: true,
             }, sessionId);
             const beforeCount = Number(before.result?.value?.count ?? 0);
             const beforeText = String(before.result?.value?.text ?? '');
+            const beforeUserCount = Number(before.result?.value?.userCount ?? 0);
+            const beforeUserText = String(before.result?.value?.userText ?? '');
             const encoded = JSON.stringify(prompt);
             const fill = await client.send('Runtime.evaluate', {
                 expression: `(() => {
@@ -329,7 +337,7 @@ export class ChromeCdpChatGptBrowserTransport {
             }, sessionId);
             if (!fill.result?.value?.ok)
                 throw new Error(`Failed to fill ChatGPT review prompt: ${fill.result?.value?.reason ?? 'unknown'}`);
-            await new Promise(resolve => setTimeout(resolve, 300));
+            await new Promise(resolve => setTimeout(resolve, 800));
             const submit = await client.send('Runtime.evaluate', {
                 expression: `(() => {
           const el = document.querySelector('#prompt-textarea') || document.querySelector('#mobile-composer-prompt') || document.querySelector('textarea[aria-label="Chat with ChatGPT"]') || document.querySelector('textarea[placeholder="Ask anything"]') || document.querySelector('[contenteditable="true"][data-lexical-editor="true"]');
@@ -341,14 +349,46 @@ export class ChromeCdpChatGptBrowserTransport {
             sendButton.click();
             return {ok:true, method:'button'};
           }
-          el.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));
-          el.dispatchEvent(new KeyboardEvent('keyup', {key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));
-          return {ok:true, method:'enter'};
+          return {ok:false, reason:'SEND_BUTTON_UNAVAILABLE'};
         })()`,
                 returnByValue: true,
             }, sessionId);
-            if (!submit.result?.value?.ok)
-                throw new Error(`Failed to submit ChatGPT review prompt: ${submit.result?.value?.reason ?? 'unknown'}`);
+            if (!submit.result?.value?.ok) {
+                await client.send('Input.dispatchKeyEvent', {
+                    type: 'keyDown',
+                    key: 'Enter',
+                    code: 'Enter',
+                    windowsVirtualKeyCode: 13,
+                    nativeVirtualKeyCode: 13,
+                }, sessionId);
+                await client.send('Input.dispatchKeyEvent', {
+                    type: 'keyUp',
+                    key: 'Enter',
+                    code: 'Enter',
+                    windowsVirtualKeyCode: 13,
+                    nativeVirtualKeyCode: 13,
+                }, sessionId);
+            }
+            const submitDeadline = Date.now() + 10_000;
+            let submitted = false;
+            while (Date.now() < submitDeadline) {
+                const userState = await client.send('Runtime.evaluate', {
+                    expression: `(() => {
+            const users = [...document.querySelectorAll('[data-message-author-role="user"]')];
+            return { count: users.length, text: (users.at(-1)?.innerText || '').trim() };
+          })()`,
+                    returnByValue: true,
+                }, sessionId);
+                const count = Number(userState.result?.value?.count ?? 0);
+                const text = String(userState.result?.value?.text ?? '');
+                if (count > beforeUserCount || (text && text !== beforeUserText)) {
+                    submitted = true;
+                    break;
+                }
+                await new Promise(resolve => setTimeout(resolve, 250));
+            }
+            if (!submitted)
+                throw new Error('ChatGPT review prompt was filled but not submitted.');
             const deadline = Date.now() + this.options.timeoutMs;
             let lastText = '';
             let stableSince = 0;
