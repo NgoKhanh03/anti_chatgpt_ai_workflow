@@ -11,7 +11,7 @@ function valueAfter(flag: string): string | undefined {
 
 const prValue = valueAfter('--pr');
 if (!prValue || !/^\d+$/.test(prValue)) {
-  throw new Error('Usage: npm run review:pr -- --pr <number> [--project-id <id>] [--overview-file <path>] [--progress-file <path>]');
+  throw new Error('Usage: npm run review:pr -- --pr <number> [--project-id <id>] [--overview-file <path>] [--progress-file <path>] [--new-conversation]');
 }
 
 const cwd = process.cwd();
@@ -24,6 +24,7 @@ const projectContext = await loadProjectReviewContext({
   overviewFile: valueAfter('--overview-file') ?? 'README.md',
   progressFile: valueAfter('--progress-file') ?? 'PROJECT_PROGRESS.md',
 });
+projectContext.forceNewConversation = process.argv.includes('--new-conversation');
 
 const reviewer = createReviewer(loadReviewerConfig());
 const result = await reviewer.review(handoff, undefined, projectContext);

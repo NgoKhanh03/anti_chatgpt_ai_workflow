@@ -23,6 +23,7 @@ export interface ProjectReviewContext {
   overview?: string;
   progress?: string;
   conversationId?: string;
+  forceNewConversation?: boolean;
 }
 
 export interface ChatGptReviewRequest {

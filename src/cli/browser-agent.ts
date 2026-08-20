@@ -57,7 +57,9 @@ const server = http.createServer(async (req, res) => {
       }, 15_000);
       res.once('close', () => clearInterval(heartbeat));
       const projectId = request.projectContext?.projectId;
-      const conversationId = request.projectContext?.conversationId ?? (
+      const conversationId = request.projectContext?.forceNewConversation
+        ? undefined
+        : request.projectContext?.conversationId ?? (
         projectId ? await conversationStore.get(projectId) : undefined
       );
       const result = await transport.reviewWithMetadata({

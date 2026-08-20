@@ -13,6 +13,7 @@ export async function loadProjectReviewContext(options) {
     const limit = options.maxCharactersPerSection ?? DEFAULT_CONTEXT_LIMIT;
     return {
         projectId: options.projectId,
+        forceNewConversation: false,
         overview: await readBounded(options.overviewFile ? resolve(options.root, options.overviewFile) : undefined, limit),
         progress: await readBounded(options.progressFile ? resolve(options.root, options.progressFile) : undefined, limit),
     };

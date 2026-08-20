@@ -9,7 +9,7 @@ function valueAfter(flag) {
 }
 const prValue = valueAfter('--pr');
 if (!prValue || !/^\d+$/.test(prValue)) {
-    throw new Error('Usage: npm run review:pr -- --pr <number> [--project-id <id>] [--overview-file <path>] [--progress-file <path>]');
+    throw new Error('Usage: npm run review:pr -- --pr <number> [--project-id <id>] [--overview-file <path>] [--progress-file <path>] [--new-conversation]');
 }
 const cwd = process.cwd();
 const github = new GitHubClient(new NodeCommandRunner(), cwd);
@@ -21,6 +21,7 @@ const projectContext = await loadProjectReviewContext({
     overviewFile: valueAfter('--overview-file') ?? 'README.md',
     progressFile: valueAfter('--progress-file') ?? 'PROJECT_PROGRESS.md',
 });
+projectContext.forceNewConversation = process.argv.includes('--new-conversation');
 const reviewer = createReviewer(loadReviewerConfig());
 const result = await reviewer.review(handoff, undefined, projectContext);
 console.log(JSON.stringify({ projectId, prNumber: handoff.pullRequest.number, result }, null, 2));
