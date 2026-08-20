@@ -21,3 +21,22 @@ test('browser agent client forwards review request to persistent agent', async (
   assert.equal(received.systemPrompt, 'review');
   server.close();
 });
+
+test('browser agent client rejects a streamed error payload', async () => {
+  const server = http.createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json', 'transfer-encoding': 'chunked' });
+    res.flushHeaders();
+    res.end(JSON.stringify({ error: 'review failed after headers were sent' }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const address = server.address();
+    const transport = new BrowserAgentClientTransport({ baseUrl: `http://127.0.0.1:${address.port}`, timeoutMs: 5000 });
+    await assert.rejects(
+      () => transport.review({ systemPrompt: 'review', handoff: {}, handoffMarkdown: '# handoff' }),
+      /review failed after headers were sent/,
+    );
+  } finally {
+    server.close();
+  }
+});

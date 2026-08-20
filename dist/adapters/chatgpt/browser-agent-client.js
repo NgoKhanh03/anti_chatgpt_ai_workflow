@@ -16,7 +16,7 @@ export class BrowserAgentClientTransport {
                 signal: controller.signal,
             });
             const payload = await response.json().catch(() => null);
-            if (!response.ok) {
+            if (!response.ok || payload?.error) {
                 throw new Error(payload?.error ?? `Browser agent returned HTTP ${response.status}`);
             }
             if (typeof payload?.response !== 'string') {

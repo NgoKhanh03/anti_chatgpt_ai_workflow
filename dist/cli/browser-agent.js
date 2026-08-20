@@ -21,6 +21,13 @@ function json(res, status, payload) {
     });
     res.end(body);
 }
+function beginStreamingJson(res) {
+    res.writeHead(200, {
+        'content-type': 'application/json; charset=utf-8',
+        'transfer-encoding': 'chunked',
+    });
+    res.flushHeaders();
+}
 async function readJson(req) {
     const chunks = [];
     for await (const chunk of req)
@@ -35,6 +42,7 @@ const server = http.createServer(async (req, res) => {
         }
         if (req.method === 'POST' && req.url === '/review') {
             const request = await readJson(req);
+            beginStreamingJson(res);
             const projectId = request.projectContext?.projectId;
             const conversationId = request.projectContext?.conversationId ?? (projectId ? await conversationStore.get(projectId) : undefined);
             const result = await transport.reviewWithMetadata({
@@ -46,13 +54,17 @@ const server = http.createServer(async (req, res) => {
             if (projectId && result.conversationId) {
                 await conversationStore.set(projectId, result.conversationId);
             }
-            json(res, 200, result);
+            res.end(JSON.stringify(result));
             return;
         }
         json(res, 404, { error: 'Not found' });
     }
     catch (error) {
-        json(res, 500, { error: error instanceof Error ? error.message : String(error) });
+        const payload = { error: error instanceof Error ? error.message : String(error) };
+        if (res.headersSent)
+            res.end(JSON.stringify(payload));
+        else
+            json(res, 500, payload);
     }
 });
 console.log('BROWSER_AGENT_ATTACHING');

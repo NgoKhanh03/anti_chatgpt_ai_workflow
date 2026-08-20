@@ -28,6 +28,14 @@ function json(res: http.ServerResponse, status: number, payload: unknown): void 
   res.end(body);
 }
 
+function beginStreamingJson(res: http.ServerResponse): void {
+  res.writeHead(200, {
+    'content-type': 'application/json; charset=utf-8',
+    'transfer-encoding': 'chunked',
+  });
+  res.flushHeaders();
+}
+
 async function readJson(req: http.IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
   for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
@@ -43,6 +51,7 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'POST' && req.url === '/review') {
       const request = await readJson(req) as ChatGptReviewRequest;
+      beginStreamingJson(res);
       const projectId = request.projectContext?.projectId;
       const conversationId = request.projectContext?.conversationId ?? (
         projectId ? await conversationStore.get(projectId) : undefined
@@ -56,13 +65,15 @@ const server = http.createServer(async (req, res) => {
       if (projectId && result.conversationId) {
         await conversationStore.set(projectId, result.conversationId);
       }
-      json(res, 200, result);
+      res.end(JSON.stringify(result));
       return;
     }
 
     json(res, 404, { error: 'Not found' });
   } catch (error) {
-    json(res, 500, { error: error instanceof Error ? error.message : String(error) });
+    const payload = { error: error instanceof Error ? error.message : String(error) };
+    if (res.headersSent) res.end(JSON.stringify(payload));
+    else json(res, 500, payload);
   }
 });
 
