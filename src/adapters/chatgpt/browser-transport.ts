@@ -193,14 +193,18 @@ export class ChromeCdpChatGptBrowserTransport implements ReviewerTransport {
         const inspection = await client.send('Runtime.evaluate', {
           expression: `(() => {
             const text = document.body?.innerText || '';
-            const attributes = [...document.querySelectorAll('[aria-label],[title]')]
-              .flatMap(el => [el.getAttribute('aria-label'), el.getAttribute('title')])
+            const attributes = [...document.querySelectorAll('button,[aria-label],[title]')]
+              .flatMap(el => [el.innerText, el.getAttribute('aria-label'), el.getAttribute('title')])
               .filter(Boolean)
               .join(' ');
-            const identity = (text + ' ' + attributes).toLowerCase();
+            const identity = attributes.toLowerCase();
             const loggedOut = /Log in to get answers based on saved chats/i.test(text) ||
-              [...document.querySelectorAll('button,a')].some(el => (el.innerText || '').trim() === 'Log in');
-            return { authenticated: !loggedOut, identity };
+              [...document.querySelectorAll('button,a')].some(el =>
+                (el.innerText || '').trim() === 'Log in' &&
+                !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+            const accountHint = ${JSON.stringify(accountHint ?? '')};
+            const accountMatches = !accountHint || identity.includes(accountHint);
+            return { authenticated: accountHint ? accountMatches : !loggedOut, identity };
           })()`,
           returnByValue: true,
         }, sessionId);
@@ -302,17 +306,20 @@ export class ChromeCdpChatGptBrowserTransport implements ReviewerTransport {
               document.querySelector('[contenteditable="true"][data-lexical-editor="true"]');
             const visible = !!composer && !!(composer.offsetWidth || composer.offsetHeight || composer.getClientRects().length);
             const loggedOut = /Log in to get answers based on saved chats/i.test(text) ||
-              [...document.querySelectorAll('button,a')].some(el => (el.innerText || '').trim() === 'Log in');
-            const identity = (text + ' ' + [...document.querySelectorAll('[aria-label],[title]')]
-              .flatMap(el => [el.getAttribute('aria-label'), el.getAttribute('title')])
+              [...document.querySelectorAll('button,a')].some(el =>
+                (el.innerText || '').trim() === 'Log in' &&
+                !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+            const identity = [...document.querySelectorAll('button,[aria-label],[title]')]
+              .flatMap(el => [el.innerText, el.getAttribute('aria-label'), el.getAttribute('title')])
               .filter(Boolean)
-              .join(' ')).toLowerCase();
+              .join(' ').toLowerCase();
             const accountHint = ${JSON.stringify(this.options.accountHint?.trim().toLowerCase() ?? '')};
+            const accountMatches = !accountHint || identity.includes(accountHint);
             return {
               readyState: document.readyState,
               ready: visible,
-              authenticated: !loggedOut,
-              accountMatches: !accountHint || identity.includes(accountHint),
+              authenticated: accountHint ? accountMatches : !loggedOut,
+              accountMatches,
               href: location.href,
               title: document.title,
             };
