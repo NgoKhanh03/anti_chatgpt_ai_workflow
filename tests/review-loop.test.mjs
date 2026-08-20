@@ -17,7 +17,7 @@ const task = {
   definitionOfDone: ['checks pass'],
 };
 
-function handoff() {
+function handoff(ciState = 'SUCCESS') {
   return {
     repository: { owner: 'acme', name: 'demo', defaultBranch: 'main' },
     pullRequest: {
@@ -26,7 +26,7 @@ function handoff() {
       url: 'https://github.com/acme/demo/pull/5',
       headRefName: 'feat/demo',
       baseRefName: 'main',
-      ciState: 'SUCCESS',
+      ciState,
     },
     diff: { patch: 'diff', files: [] },
     generatedAt: new Date().toISOString(),
@@ -34,8 +34,12 @@ function handoff() {
 }
 
 class FakeGitHub {
+  constructor(ciStates = ['SUCCESS']) {
+    this.ciStates = [...ciStates];
+  }
+
   async createHandoffPacket() {
-    return handoff();
+    return handoff(this.ciStates.shift() ?? 'SUCCESS');
   }
 }
 
@@ -57,6 +61,42 @@ class PassingAntigravityTransport {
       success: true,
       summary: 'fixed',
       commitSha: 'abc123',
+      changedFiles: ['src/demo.ts'],
+      checks: {
+        lint: 'PASS',
+        typecheck: 'PASS',
+        tests: 'PASS',
+        build: 'PASS',
+      },
+      errors: [],
+    };
+  }
+}
+
+class FailingAntigravityTransport {
+  async execute(request) {
+    return {
+      taskId: request.task.task.id,
+      success: false,
+      summary: 'fix failed',
+      changedFiles: [],
+      checks: {
+        lint: 'PASS',
+        typecheck: 'PASS',
+        tests: 'FAIL',
+        build: 'SKIPPED',
+      },
+      errors: ['tests failed'],
+    };
+  }
+}
+
+class MissingCommitAntigravityTransport {
+  async execute(request) {
+    return {
+      taskId: request.task.task.id,
+      success: true,
+      summary: 'fixed without commit',
       changedFiles: ['src/demo.ts'],
       checks: {
         lint: 'PASS',
@@ -162,6 +202,180 @@ test('max iterations moves workflow to NEEDS_HUMAN', async () => {
     const result = await coordinator.run(task, 5);
     assert.equal(result.state, 'NEEDS_HUMAN');
     assert.equal(result.iteration, 3);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('CI failure returns workflow to FIXING without invoking reviewer', async () => {
+  const { dir, store } = await createStore('PR_CREATED');
+  try {
+    const coordinator = new ReviewLoopCoordinator(
+      new FakeGitHub(['FAILURE']),
+      new SequenceReviewer([]),
+      new SequenceReviewer([]),
+      new AntigravityAdapter(new PassingAntigravityTransport()),
+      store,
+      { maxIterations: 5 },
+    );
+
+    const result = await coordinator.run(task, 5);
+    assert.equal(result.state, 'FIXING');
+    assert.equal(result.iteration, 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('pending CI pauses in AI_REVIEWING without invoking reviewer', async () => {
+  const { dir, store } = await createStore('PR_CREATED');
+  try {
+    const coordinator = new ReviewLoopCoordinator(
+      new FakeGitHub(['PENDING']),
+      new SequenceReviewer([]),
+      new SequenceReviewer([]),
+      new AntigravityAdapter(new PassingAntigravityTransport()),
+      store,
+      { maxIterations: 5 },
+    );
+
+    const result = await coordinator.run(task, 5);
+    assert.equal(result.state, 'AI_REVIEWING');
+    assert.equal(result.iteration, 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('non-blocking REQUEST_CHANGES proceeds to clean-room review', async () => {
+  const { dir, store } = await createStore('PR_CREATED');
+  try {
+    const coordinator = new ReviewLoopCoordinator(
+      new FakeGitHub(),
+      new SequenceReviewer([
+        {
+          verdict: 'REQUEST_CHANGES',
+          issues: [{ id: 'R-P2', severity: 'P2', problem: 'Optional improvement' }],
+        },
+      ]),
+      new SequenceReviewer([{ verdict: 'APPROVE', issues: [] }]),
+      new AntigravityAdapter(new PassingAntigravityTransport()),
+      store,
+      { maxIterations: 5 },
+    );
+
+    const result = await coordinator.run(task, 5);
+    assert.equal(result.state, 'HUMAN_APPROVAL');
+    assert.equal(result.iteration, 1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('failed fix remains OPEN and returns workflow to FIXING', async () => {
+  const { dir, store } = await createStore('PR_CREATED');
+  try {
+    const review = {
+      verdict: 'REQUEST_CHANGES',
+      issues: [{ id: 'R-FAIL', severity: 'P1', problem: 'Still broken' }],
+    };
+    const coordinator = new ReviewLoopCoordinator(
+      new FakeGitHub(),
+      new SequenceReviewer([review]),
+      new SequenceReviewer([]),
+      new AntigravityAdapter(new FailingAntigravityTransport()),
+      store,
+      { maxIterations: 5 },
+    );
+
+    const result = await coordinator.run(task, 5);
+    const saved = await store.load();
+    assert.equal(result.state, 'FIXING');
+    assert.equal(saved.issues['R-FAIL'].status, 'OPEN');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('fix without a commit remains OPEN and returns workflow to FIXING', async () => {
+  const { dir, store } = await createStore('PR_CREATED');
+  try {
+    const coordinator = new ReviewLoopCoordinator(
+      new FakeGitHub(),
+      new SequenceReviewer([
+        {
+          verdict: 'REQUEST_CHANGES',
+          issues: [{ id: 'R-NO-COMMIT', severity: 'P1', problem: 'Must be committed' }],
+        },
+      ]),
+      new SequenceReviewer([]),
+      new AntigravityAdapter(new MissingCommitAntigravityTransport()),
+      store,
+      { maxIterations: 5 },
+    );
+
+    const result = await coordinator.run(task, 5);
+    const saved = await store.load();
+    assert.equal(result.state, 'FIXING');
+    assert.equal(saved.issues['R-NO-COMMIT'].status, 'OPEN');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('clean-room review rechecks CI before invoking reviewer', async () => {
+  const { dir, store } = await createStore('PR_CREATED');
+  try {
+    const coordinator = new ReviewLoopCoordinator(
+      new FakeGitHub(['SUCCESS', 'FAILURE']),
+      new SequenceReviewer([{ verdict: 'APPROVE', issues: [] }]),
+      new SequenceReviewer([]),
+      new AntigravityAdapter(new PassingAntigravityTransport()),
+      store,
+      { maxIterations: 5 },
+    );
+
+    const result = await coordinator.run(task, 5);
+    assert.equal(result.state, 'FIXING');
+    assert.equal(result.iteration, 1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('resumes a persisted FINAL_REVIEW state', async () => {
+  const { dir, store } = await createStore('FINAL_REVIEW');
+  try {
+    const coordinator = new ReviewLoopCoordinator(
+      new FakeGitHub(),
+      new SequenceReviewer([]),
+      new SequenceReviewer([{ verdict: 'APPROVE', issues: [] }]),
+      new AntigravityAdapter(new PassingAntigravityTransport()),
+      store,
+      { maxIterations: 5 },
+    );
+
+    const result = await coordinator.run(task, 5);
+    assert.equal(result.state, 'HUMAN_APPROVAL');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('rejects an invalid max iteration policy', async () => {
+  const { dir, store } = await createStore('PR_CREATED');
+  try {
+    assert.throws(
+      () => new ReviewLoopCoordinator(
+        new FakeGitHub(),
+        new SequenceReviewer([]),
+        new SequenceReviewer([]),
+        new AntigravityAdapter(new PassingAntigravityTransport()),
+        store,
+        { maxIterations: 0 },
+      ),
+      /positive integer/,
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

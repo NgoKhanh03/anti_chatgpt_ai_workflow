@@ -1,4 +1,10 @@
 export { ChatGptReviewerAdapter } from './adapter.js';
+export {
+  ChromeCdpChatGptBrowserTransport,
+  PlaywrightChatGptBrowserTransport,
+  buildBrowserReviewPrompt,
+} from './browser-transport.js';
+export type { ChatGptBrowserOptions } from './browser-transport.js';
 export { InvalidReviewResponseError, parseReviewResponse } from './parser.js';
 export { DEFAULT_REVIEWER_PROMPT } from './prompt.js';
 export { UnconfiguredBrowserTransport } from './transport.js';
@@ -10,3 +16,6 @@ export type {
   ReviewSeverity,
   ReviewVerdict,
 } from './types.js';
+
+export { BrowserAgentClientTransport } from './browser-agent-client.js';
+export type { BrowserAgentClientOptions } from './browser-agent-client.js';

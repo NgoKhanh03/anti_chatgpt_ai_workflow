@@ -1,0 +1,286 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+class RawCdpClient {
+    ws;
+    seq = 0;
+    pending = new Map();
+    async connect(wsUrl, timeoutMs) {
+        this.ws = new WebSocket(wsUrl);
+        this.ws.onmessage = event => {
+            const msg = JSON.parse(String(event.data));
+            if (!msg.id)
+                return;
+            const pending = this.pending.get(msg.id);
+            if (!pending)
+                return;
+            this.pending.delete(msg.id);
+            if (msg.error)
+                pending.reject(new Error(JSON.stringify(msg.error)));
+            else
+                pending.resolve(msg.result);
+        };
+        await new Promise((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error(`CDP websocket connect timed out after ${timeoutMs}ms`)), timeoutMs);
+            this.ws.onopen = () => { clearTimeout(timer); resolve(); };
+            this.ws.onerror = () => { clearTimeout(timer); reject(new Error(`Failed to connect to CDP websocket: ${wsUrl}`)); };
+        });
+    }
+    send(method, params = {}, sessionId) {
+        return new Promise((resolve, reject) => {
+            const id = ++this.seq;
+            this.pending.set(id, { resolve, reject });
+            const message = { id, method, params };
+            if (sessionId)
+                message.sessionId = sessionId;
+            this.ws.send(JSON.stringify(message));
+        });
+    }
+    isOpen() {
+        return this.ws?.readyState === WebSocket.OPEN;
+    }
+    close() {
+        this.ws?.close();
+    }
+}
+function defaultDevToolsActivePortFile() {
+    return path.join(os.homedir(), 'Library/Application Support/Google/Chrome/DevToolsActivePort');
+}
+export function resolveBrowserWebSocketUrl(options = {}) {
+    if (options.cdpUrl?.startsWith('ws://') || options.cdpUrl?.startsWith('wss://'))
+        return options.cdpUrl;
+    const activePortFile = options.devToolsActivePortFile ?? defaultDevToolsActivePortFile();
+    const raw = fs.readFileSync(activePortFile, 'utf8').trim().split(/\r?\n/);
+    const port = raw[0];
+    const browserPath = raw[1];
+    if (!port || !browserPath)
+        throw new Error(`Invalid DevToolsActivePort file: ${activePortFile}`);
+    return `ws://127.0.0.1:${port}${browserPath}`;
+}
+export function buildBrowserReviewPrompt(requestOrSystemPrompt, handoff) {
+    const systemPrompt = typeof requestOrSystemPrompt === 'string'
+        ? requestOrSystemPrompt
+        : requestOrSystemPrompt.systemPrompt;
+    const handoffMarkdown = typeof requestOrSystemPrompt === 'string'
+        ? (handoff ?? '')
+        : requestOrSystemPrompt.handoffMarkdown;
+    return `${systemPrompt}\n\n--- PR HANDOFF ---\n${handoffMarkdown}\n\nReturn the Review Contract JSON only. The response MUST be syntactically valid JSON parseable by JSON.parse. Escape every double quote that appears inside a JSON string value. Do not use Markdown fences, comments, trailing commas, or any text before or after the JSON object.`;
+}
+export class ChromeCdpChatGptBrowserTransport {
+    options;
+    persistentClient;
+    constructor(options = {}) {
+        this.options = {
+            ...options,
+            chatUrl: options.chatUrl ?? 'https://chatgpt.com/',
+            timeoutMs: options.timeoutMs ?? 120_000,
+            settleMs: options.settleMs ?? 1_500,
+            newChatPerReview: options.newChatPerReview ?? true,
+            persistentConnection: options.persistentConnection ?? false,
+        };
+    }
+    async createClient() {
+        const client = new RawCdpClient();
+        const wsUrl = resolveBrowserWebSocketUrl(this.options);
+        await client.connect(wsUrl, Math.min(this.options.timeoutMs, 10_000));
+        return client;
+    }
+    async connect() {
+        if (this.persistentClient?.isOpen())
+            return;
+        this.persistentClient?.close();
+        this.persistentClient = await this.createClient();
+    }
+    close() {
+        this.persistentClient?.close();
+        this.persistentClient = undefined;
+    }
+    async acquireClient() {
+        if (this.options.persistentConnection) {
+            await this.connect();
+            if (!this.persistentClient)
+                throw new Error('Persistent CDP client was not initialized.');
+            return this.persistentClient;
+        }
+        return this.createClient();
+    }
+    async review(request) {
+        const systemPrompt = request.systemPrompt;
+        const handoff = request.handoffMarkdown;
+        const client = await this.acquireClient();
+        let reviewSessionId;
+        try {
+            const { targetInfos } = await client.send('Target.getTargets');
+            const targets = (targetInfos ?? []).filter((t) => t.type === 'page' && String(t.url ?? '').includes('chatgpt.com'));
+            if (!targets.length)
+                throw new Error('No existing ChatGPT tab found in the active Chrome session. Open ChatGPT in Profile 2 first.');
+            // Open every review from an already authenticated ChatGPT target. Chrome does
+            // not allow Target.createTarget(browserContextId) for normal user profiles,
+            // so opening from the Profile 2 page itself is what reliably inherits its
+            // cookies, account and browser context without launching another browser.
+            const anchorTarget = targets[0];
+            let target = anchorTarget;
+            if (this.options.newChatPerReview) {
+                const existingTargetIds = new Set((targetInfos ?? []).map((t) => t.targetId));
+                const { sessionId: anchorSessionId } = await client.send('Target.attachToTarget', {
+                    targetId: anchorTarget.targetId,
+                    flatten: true,
+                });
+                await client.send('Runtime.enable', {}, anchorSessionId);
+                const openResult = await client.send('Runtime.evaluate', {
+                    expression: `window.open(${JSON.stringify(this.options.chatUrl)}, '_blank') !== null`,
+                    returnByValue: true,
+                    userGesture: true,
+                }, anchorSessionId);
+                await client.send('Target.detachFromTarget', { sessionId: anchorSessionId }).catch(() => { });
+                if (!openResult.result?.value) {
+                    throw new Error('Chrome blocked creation of a new ChatGPT tab from the authenticated Profile 2 tab.');
+                }
+                const targetDeadline = Date.now() + 10_000;
+                let createdTarget = null;
+                while (Date.now() < targetDeadline) {
+                    const current = await client.send('Target.getTargets');
+                    createdTarget = (current.targetInfos ?? []).find((candidate) => candidate.type === 'page' &&
+                        !existingTargetIds.has(candidate.targetId) &&
+                        String(candidate.url ?? '').includes('chatgpt.com') &&
+                        (!anchorTarget.browserContextId || candidate.browserContextId === anchorTarget.browserContextId));
+                    if (createdTarget)
+                        break;
+                    await new Promise(resolve => setTimeout(resolve, 200));
+                }
+                if (!createdTarget) {
+                    throw new Error('A new ChatGPT tab was opened, but its Profile 2 CDP target was not discovered in time.');
+                }
+                target = createdTarget;
+            }
+            const { sessionId } = await client.send('Target.attachToTarget', { targetId: target.targetId, flatten: true });
+            reviewSessionId = sessionId;
+            await client.send('Runtime.enable', {}, sessionId);
+            await client.send('Page.enable', {}, sessionId);
+            const pageReadyDeadline = Date.now() + Math.min(this.options.timeoutMs, 30_000);
+            let state = null;
+            while (Date.now() < pageReadyDeadline) {
+                const readiness = await client.send('Runtime.evaluate', {
+                    expression: `(() => {
+            const text = document.body?.innerText || '';
+            const composer = document.querySelector('#prompt-textarea') ||
+              document.querySelector('#mobile-composer-prompt') ||
+              document.querySelector('textarea[aria-label="Chat with ChatGPT"]') ||
+              document.querySelector('textarea[placeholder="Ask anything"]') ||
+              document.querySelector('[contenteditable="true"][data-lexical-editor="true"]');
+            const visible = !!composer && !!(composer.offsetWidth || composer.offsetHeight || composer.getClientRects().length);
+            const loggedOut = /Log in to get answers based on saved chats/i.test(text) ||
+              [...document.querySelectorAll('button,a')].some(el => (el.innerText || '').trim() === 'Log in');
+            return {
+              readyState: document.readyState,
+              ready: visible,
+              authenticated: !loggedOut,
+              href: location.href,
+              title: document.title,
+            };
+          })()`,
+                    returnByValue: true,
+                }, sessionId).catch(() => ({ result: { value: null } }));
+                state = readiness.result?.value ?? null;
+                if (state?.ready && state?.authenticated)
+                    break;
+                await new Promise(resolve => setTimeout(resolve, 300));
+            }
+            if (!state?.ready) {
+                throw new Error(`ChatGPT composer did not become ready in the new Profile 2 chat. Last state: ${JSON.stringify(state)}`);
+            }
+            if (!state?.authenticated) {
+                throw new Error('The new ChatGPT tab is not authenticated. Use Chrome Profile 2 logged into khanh.ngo.2303@gmail.com.');
+            }
+            const prompt = buildBrowserReviewPrompt(request);
+            const before = await client.send('Runtime.evaluate', {
+                expression: `document.querySelectorAll('[data-message-author-role="assistant"]').length`,
+                returnByValue: true,
+            }, sessionId);
+            const beforeCount = Number(before.result?.value ?? 0);
+            const encoded = JSON.stringify(prompt);
+            const fill = await client.send('Runtime.evaluate', {
+                expression: `(() => {
+          const el = document.querySelector('#prompt-textarea') || document.querySelector('#mobile-composer-prompt') || document.querySelector('textarea[aria-label="Chat with ChatGPT"]') || document.querySelector('textarea[placeholder="Ask anything"]') || document.querySelector('[contenteditable="true"][data-lexical-editor="true"]');
+          if (!el) return {ok:false, reason:'NO_COMPOSER'};
+          el.focus();
+          const value = ${encoded};
+
+          if (el instanceof HTMLTextAreaElement) {
+            const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+            setter?.call(el, value);
+            el.dispatchEvent(new Event('input', {bubbles:true}));
+            el.dispatchEvent(new Event('change', {bubbles:true}));
+          } else {
+            const sel = window.getSelection();
+            const range = document.createRange();
+            range.selectNodeContents(el);
+            sel?.removeAllRanges();
+            sel?.addRange(range);
+            document.execCommand('insertText', false, value);
+            el.dispatchEvent(new InputEvent('input', {bubbles:true,inputType:'insertText',data:value}));
+          }
+          return {ok:true};
+        })()`,
+                returnByValue: true,
+            }, sessionId);
+            if (!fill.result?.value?.ok)
+                throw new Error(`Failed to fill ChatGPT review prompt: ${fill.result?.value?.reason ?? 'unknown'}`);
+            await new Promise(resolve => setTimeout(resolve, 300));
+            const submit = await client.send('Runtime.evaluate', {
+                expression: `(() => {
+          const el = document.querySelector('#prompt-textarea') || document.querySelector('#mobile-composer-prompt') || document.querySelector('textarea[aria-label="Chat with ChatGPT"]') || document.querySelector('textarea[placeholder="Ask anything"]') || document.querySelector('[contenteditable="true"][data-lexical-editor="true"]');
+          if (!el) return {ok:false, reason:'NO_COMPOSER'};
+          const sendButton = document.querySelector('button[data-testid="send-button"]') ||
+            document.querySelector('button[aria-label="Send message"]') ||
+            [...document.querySelectorAll('button')].find(b => /send message/i.test(b.getAttribute('aria-label') || ''));
+          if (sendButton && !sendButton.disabled) {
+            sendButton.click();
+            return {ok:true, method:'button'};
+          }
+          el.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));
+          el.dispatchEvent(new KeyboardEvent('keyup', {key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));
+          return {ok:true, method:'enter'};
+        })()`,
+                returnByValue: true,
+            }, sessionId);
+            if (!submit.result?.value?.ok)
+                throw new Error(`Failed to submit ChatGPT review prompt: ${submit.result?.value?.reason ?? 'unknown'}`);
+            const deadline = Date.now() + this.options.timeoutMs;
+            let lastText = '';
+            let stableSince = 0;
+            while (Date.now() < deadline) {
+                await new Promise(resolve => setTimeout(resolve, 750));
+                const response = await client.send('Runtime.evaluate', {
+                    expression: `(() => {
+            const els = [...document.querySelectorAll('[data-message-author-role="assistant"]')];
+            return { count: els.length, text: (els.at(-1)?.innerText || '').trim() };
+          })()`,
+                    returnByValue: true,
+                }, sessionId);
+                const value = response.result?.value ?? {};
+                const text = String(value.text ?? '');
+                const count = Number(value.count ?? 0);
+                if (count <= beforeCount || !text)
+                    continue;
+                if (text !== lastText) {
+                    lastText = text;
+                    stableSince = Date.now();
+                    continue;
+                }
+                if (stableSince && Date.now() - stableSince >= this.options.settleMs)
+                    return text;
+            }
+            throw new Error(`Timed out waiting for ChatGPT review response after ${this.options.timeoutMs}ms`);
+        }
+        finally {
+            if (reviewSessionId) {
+                await client.send('Target.detachFromTarget', { sessionId: reviewSessionId }).catch(() => { });
+            }
+            if (!this.options.persistentConnection)
+                client.close();
+        }
+    }
+}
+// Backward-compatible alias while callers migrate names.
+export const PlaywrightChatGptBrowserTransport = ChromeCdpChatGptBrowserTransport;

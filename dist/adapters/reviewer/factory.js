@@ -1,8 +1,12 @@
-import { ChatGptReviewerAdapter, UnconfiguredBrowserTransport, } from '../chatgpt/index.js';
+import { ChatGptReviewerAdapter, BrowserAgentClientTransport, } from '../chatgpt/index.js';
 import { FetchOpenAiReviewClient, OpenAiApiTransport, } from '../openai/index.js';
 export function createReviewer(config, overrides = {}) {
     if (config.transport === 'browser') {
-        return new ChatGptReviewerAdapter(overrides.browserTransport ?? new UnconfiguredBrowserTransport());
+        const browser = config.browser;
+        return new ChatGptReviewerAdapter(overrides.browserTransport ?? new BrowserAgentClientTransport({
+            baseUrl: browser?.agentUrl,
+            timeoutMs: browser?.timeoutMs,
+        }));
     }
     if (overrides.openaiTransport) {
         return new ChatGptReviewerAdapter(overrides.openaiTransport);

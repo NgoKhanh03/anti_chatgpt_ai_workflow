@@ -1,3 +1,4 @@
+import { deterministicChecksPassed, hasCommit, } from '../adapters/antigravity/index.js';
 import { transition } from './workflow-state.js';
 function isBlocking(issue) {
     return issue.severity === 'P0' || issue.severity === 'P1';
@@ -16,6 +17,9 @@ export class ReviewLoopCoordinator {
         this.antigravity = antigravity;
         this.stateStore = stateStore;
         this.policy = policy;
+        if (!Number.isInteger(policy.maxIterations) || policy.maxIterations <= 0) {
+            throw new Error('Review loop maxIterations must be a positive integer.');
+        }
     }
     async persist(state) {
         await this.stateStore.save(state);
@@ -43,9 +47,91 @@ export class ReviewLoopCoordinator {
                 tracked.status = 'FIXED';
         }
     }
+    async handleCiState(state, ciState) {
+        if (ciState === 'SUCCESS')
+            return undefined;
+        if (ciState === 'FAILURE') {
+            state.state = transition(state.state, 'FIXING');
+        }
+        else if (ciState === 'UNKNOWN') {
+            state.state = transition(state.state, 'NEEDS_HUMAN');
+        }
+        await this.persist(state);
+        return { state: state.state, iteration: state.iteration };
+    }
+    async fixBlockingIssues(state, task, review) {
+        const blocking = review.issues.filter(isBlocking);
+        state.state = transition(state.state, 'FIXING');
+        await this.persist(state);
+        const execution = await this.antigravity.fix(task, blocking.map((issue) => ({
+            id: issue.id,
+            severity: issue.severity,
+            problem: issue.problem,
+            recommendedFix: issue.recommendedFix,
+        })));
+        const readyForReview = deterministicChecksPassed(execution) && hasCommit(execution);
+        if (readyForReview) {
+            this.markBlockingIssuesFixed(state, review);
+        }
+        state.state = transition(state.state, 'TESTING');
+        if (!readyForReview) {
+            state.state = transition(state.state, 'FIXING');
+        }
+        await this.persist(state);
+        return readyForReview;
+    }
+    async runCleanRoomReview(state, task, prNumber) {
+        const cleanHandoff = await this.github.createHandoffPacket(prNumber);
+        const ciResult = await this.handleCiState(state, cleanHandoff.pullRequest.ciState);
+        if (ciResult)
+            return ciResult;
+        const finalReview = await this.cleanRoomReviewer.review(cleanHandoff);
+        this.syncIssues(state, finalReview);
+        const finalBlocking = finalReview.issues.filter(isBlocking);
+        if (finalBlocking.length > 0) {
+            const fixed = await this.fixBlockingIssues(state, task, finalReview);
+            if (!fixed) {
+                return {
+                    state: state.state,
+                    iteration: state.iteration,
+                    review: finalReview,
+                };
+            }
+            return undefined;
+        }
+        state.state = transition(state.state, 'AI_APPROVED');
+        state.state = transition(state.state, 'HUMAN_APPROVAL');
+        await this.persist(state);
+        return {
+            state: state.state,
+            iteration: state.iteration,
+            review: finalReview,
+        };
+    }
     async run(task, prNumber) {
         const state = await this.stateStore.load();
         state.prNumber = prNumber;
+        if (state.state === 'HUMAN_APPROVAL' || state.state === 'NEEDS_HUMAN' || state.state === 'MERGED') {
+            await this.persist(state);
+            return { state: state.state, iteration: state.iteration };
+        }
+        if (state.state === 'AI_APPROVED') {
+            state.state = transition(state.state, 'HUMAN_APPROVAL');
+            await this.persist(state);
+            return { state: state.state, iteration: state.iteration };
+        }
+        if (state.state === 'FIXING') {
+            await this.persist(state);
+            return { state: state.state, iteration: state.iteration };
+        }
+        if (state.state === 'NEW' || state.state === 'CODING') {
+            throw new Error(`Review loop cannot start from ${state.state}; a tested pull request is required.`);
+        }
+        if (state.state === 'FINAL_REVIEW') {
+            const resumedFinalReview = await this.runCleanRoomReview(state, task, prNumber);
+            if (resumedFinalReview)
+                return resumedFinalReview;
+        }
         while (state.iteration < this.policy.maxIterations) {
             if (state.state === 'PR_CREATED') {
                 state.state = transition(state.state, 'AI_REVIEWING');
@@ -56,75 +142,32 @@ export class ReviewLoopCoordinator {
             }
             await this.persist(state);
             const handoff = await this.github.createHandoffPacket(prNumber);
-            if (handoff.pullRequest.ciState !== 'SUCCESS') {
-                state.state = 'NEEDS_HUMAN';
-                await this.persist(state);
-                return { state: state.state, iteration: state.iteration };
-            }
+            const ciResult = await this.handleCiState(state, handoff.pullRequest.ciState);
+            if (ciResult)
+                return ciResult;
             const review = await this.reviewer.review(handoff);
             state.iteration += 1;
             this.syncIssues(state, review);
             await this.persist(state);
             const blocking = review.issues.filter(isBlocking);
-            if (review.verdict === 'REQUEST_CHANGES' && blocking.length > 0) {
-                state.state = transition(state.state, 'FIXING');
-                await this.persist(state);
-                const execution = await this.antigravity.fix(task, blocking.map((issue) => ({
-                    id: issue.id,
-                    severity: issue.severity,
-                    problem: issue.problem,
-                    recommendedFix: issue.recommendedFix,
-                })));
-                this.markBlockingIssuesFixed(state, review);
-                state.state = transition(state.state, 'TESTING');
-                await this.persist(state);
-                const allPassed = execution.success &&
-                    Object.values(execution.checks).every((status) => status === 'PASS');
-                if (!allPassed) {
-                    state.state = transition(state.state, 'FIXING');
-                    await this.persist(state);
-                    continue;
+            if (blocking.length > 0) {
+                const fixed = await this.fixBlockingIssues(state, task, review);
+                if (!fixed) {
+                    return {
+                        state: state.state,
+                        iteration: state.iteration,
+                        review,
+                    };
                 }
                 continue;
             }
-            if (review.verdict === 'APPROVE') {
-                state.state = transition(state.state, 'FINAL_REVIEW');
-                await this.persist(state);
-                const cleanHandoff = await this.github.createHandoffPacket(prNumber);
-                const finalReview = await this.cleanRoomReviewer.review(cleanHandoff);
-                this.syncIssues(state, finalReview);
-                const finalBlocking = finalReview.issues.filter(isBlocking);
-                if (finalReview.verdict === 'REQUEST_CHANGES' && finalBlocking.length > 0) {
-                    state.state = transition(state.state, 'FIXING');
-                    await this.persist(state);
-                    const execution = await this.antigravity.fix(task, finalBlocking.map((issue) => ({
-                        id: issue.id,
-                        severity: issue.severity,
-                        problem: issue.problem,
-                        recommendedFix: issue.recommendedFix,
-                    })));
-                    this.markBlockingIssuesFixed(state, finalReview);
-                    state.state = transition(state.state, 'TESTING');
-                    await this.persist(state);
-                    const allPassed = execution.success &&
-                        Object.values(execution.checks).every((status) => status === 'PASS');
-                    if (!allPassed) {
-                        state.state = transition(state.state, 'FIXING');
-                        await this.persist(state);
-                    }
-                    continue;
-                }
-                state.state = transition(state.state, 'AI_APPROVED');
-                state.state = transition(state.state, 'HUMAN_APPROVAL');
-                await this.persist(state);
-                return {
-                    state: state.state,
-                    iteration: state.iteration,
-                    review: finalReview,
-                };
-            }
+            state.state = transition(state.state, 'FINAL_REVIEW');
+            await this.persist(state);
+            const finalResult = await this.runCleanRoomReview(state, task, prNumber);
+            if (finalResult)
+                return finalResult;
         }
-        state.state = 'NEEDS_HUMAN';
+        state.state = transition(state.state, 'NEEDS_HUMAN');
         await this.persist(state);
         return { state: state.state, iteration: state.iteration };
     }
