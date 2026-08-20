@@ -1165,4 +1165,3 @@ Nguyên tắc:
 3. Ghi rõ nguyên nhân gốc, không chỉ ghi symptom.
 4. Ghi command/test đã dùng để verify.
 5. Nếu một fix gây regression mới, tạo BUG ID mới và reference bug trước đó.
-
