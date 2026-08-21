@@ -27,6 +27,8 @@ class FakeGitHub {
         url: `https://github.com/acme/integration/pull/${prNumber}`,
         headRefName: 'feat/integration',
         baseRefName: 'main',
+        headSha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        baseSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         ciState: 'SUCCESS',
       },
       diff: { patch: 'diff', files: [{ path: 'src/app.ts', additions: 1, deletions: 0 }] },

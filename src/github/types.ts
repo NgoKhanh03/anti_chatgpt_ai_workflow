@@ -12,6 +12,8 @@ export interface PullRequestContext {
   url: string;
   headRefName: string;
   baseRefName: string;
+  headSha: string;
+  baseSha: string;
   author?: string;
   body?: string;
   ciState: CiState;
@@ -34,4 +36,31 @@ export interface PrHandoffPacket {
   pullRequest: PullRequestContext;
   diff: PullRequestDiff;
   generatedAt: string;
+}
+
+export interface PullRequestCreationInput {
+  headBranch: string;
+  baseBranch: string;
+  title: string;
+  body: string;
+}
+
+export interface CiWaitOptions {
+  timeoutMs: number;
+  pollIntervalMs: number;
+}
+
+export interface ReviewCommentInput {
+  phase: 'review' | 'clean-room';
+  iteration: number;
+  headSha: string;
+  verdict: 'APPROVE' | 'REQUEST_CHANGES';
+  issues: Array<{
+    id: string;
+    severity: 'P0' | 'P1' | 'P2' | 'P3';
+    file?: string;
+    line?: number;
+    problem: string;
+    recommendedFix?: string;
+  }>;
 }

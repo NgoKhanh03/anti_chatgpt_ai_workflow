@@ -1,0 +1,9 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+*.log
+*.tmp
+node_modules/
+.ai/project-conversations.json
+.ai/runs/

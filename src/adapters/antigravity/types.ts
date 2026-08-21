@@ -1,3 +1,5 @@
+import type { UnitScopePolicy } from '../../policy/index.js';
+
 export interface TaskContract {
   task: {
     id: string;
@@ -6,6 +8,7 @@ export interface TaskContract {
   };
   constraints: string[];
   definitionOfDone: string[];
+  scope?: UnitScopePolicy;
 }
 
 export type CheckStatus = 'PASS' | 'FAIL' | 'SKIPPED';
@@ -26,6 +29,7 @@ export interface AntigravityExecutionResult {
   changedFiles: string[];
   checks: ExecutionChecks;
   errors: string[];
+  scopeExpansionReason?: string;
 }
 
 export interface AntigravityRequest {

@@ -12,6 +12,7 @@ export function renderHandoffMarkdown(packet: PrHandoffPacket): string {
     `Repository: ${repository.owner}/${repository.name}`,
     `PR: #${pullRequest.number} — ${pullRequest.title}`,
     `Branch: ${pullRequest.headRefName} -> ${pullRequest.baseRefName}`,
+    `Commit Range: ${pullRequest.baseSha}..${pullRequest.headSha}`,
     `CI: ${pullRequest.ciState}`,
     `URL: ${pullRequest.url}`,
     '',

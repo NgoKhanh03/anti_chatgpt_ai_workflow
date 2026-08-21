@@ -1,5 +1,42 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "AI Workflow Task Contract",
-  "type": "object"
+  "type": "object",
+  "properties": {
+    "task": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "objective": { "type": "string", "minLength": 1 },
+        "acceptanceCriteria": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1
+        }
+      },
+      "required": ["id", "objective", "acceptanceCriteria"],
+      "additionalProperties": false
+    },
+    "constraints": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "definitionOfDone": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "minItems": 1
+    },
+    "scope": {
+      "type": "object",
+      "properties": {
+        "expectedFiles": { "type": "array", "items": { "type": "string" } },
+        "allowedWriteRoots": { "type": "array", "items": { "type": "string" } },
+        "protectedPaths": { "type": "array", "items": { "type": "string" } },
+        "allowReasonedExpansion": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "required": ["task", "constraints", "definitionOfDone"],
+  "additionalProperties": false
 }

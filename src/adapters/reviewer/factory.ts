@@ -1,6 +1,7 @@
 import {
   ChatGptReviewerAdapter,
-  UnconfiguredBrowserTransport,
+  BrowserAgentClientTransport,
+  ChromeCdpChatGptBrowserTransport,
 } from '../chatgpt/index.js';
 import {
   FetchOpenAiReviewClient,
@@ -19,8 +20,12 @@ export function createReviewer(
   overrides: ReviewerFactoryOverrides = {},
 ): ChatGptReviewerAdapter {
   if (config.transport === 'browser') {
+    const browser = config.browser;
     return new ChatGptReviewerAdapter(
-      overrides.browserTransport ?? new UnconfiguredBrowserTransport(),
+      overrides.browserTransport ?? new BrowserAgentClientTransport({
+        baseUrl: browser?.agentUrl,
+        timeoutMs: browser?.agentRequestTimeoutMs,
+      }),
     );
   }
 
