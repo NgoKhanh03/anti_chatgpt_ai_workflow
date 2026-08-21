@@ -7,6 +7,8 @@ export interface ReviewIssueState {
   id: string;
   severity: 'P0' | 'P1' | 'P2' | 'P3';
   status: ReviewIssueStatus;
+  problem?: string;
+  recommendedFix?: string;
 }
 
 export interface WorkflowPersistedState {

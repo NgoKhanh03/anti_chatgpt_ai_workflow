@@ -4,14 +4,21 @@ import {
   type AntigravityAdapter,
   type TaskContract,
 } from '../adapters/antigravity/index.js';
-import type { ChatGptReviewerAdapter, ReviewIssue, ReviewResult } from '../adapters/chatgpt/index.js';
-import type { CiState, GitHubClient } from '../github/index.js';
+import type {
+  ChatGptReviewerAdapter,
+  ProjectReviewContext,
+  ReviewIssue,
+  ReviewResult,
+} from '../adapters/chatgpt/index.js';
+import { CiWaitTimeoutError, type CiState, type GitHubClient } from '../github/index.js';
 import type { StateStore, WorkflowPersistedState } from '../state/index.js';
 import { assertApprovalCurrent, createApprovalEvidence } from '../review/index.js';
 import { transition, type WorkflowState } from './workflow-state.js';
 
 export interface ReviewLoopPolicy {
   maxIterations: number;
+  ciTimeoutMs?: number;
+  ciPollIntervalMs?: number;
 }
 
 export interface ReviewLoopResult {
@@ -20,13 +27,21 @@ export interface ReviewLoopResult {
   review?: ReviewResult;
 }
 
+export interface ReviewLoopContext {
+  project?: ProjectReviewContext;
+  cleanRoomProject?: ProjectReviewContext;
+}
+
+type ReviewLoopGitHub = Pick<GitHubClient, 'createHandoffPacket'> &
+  Partial<Pick<GitHubClient, 'waitForCi' | 'pushBranch' | 'publishReviewComment'>>;
+
 function isBlocking(issue: ReviewIssue): boolean {
   return issue.severity === 'P0' || issue.severity === 'P1';
 }
 
 export class ReviewLoopCoordinator {
   constructor(
-    private readonly github: GitHubClient,
+    private readonly github: ReviewLoopGitHub,
     private readonly reviewer: ChatGptReviewerAdapter,
     private readonly cleanRoomReviewer: ChatGptReviewerAdapter,
     private readonly antigravity: AntigravityAdapter,
@@ -57,6 +72,8 @@ export class ReviewLoopCoordinator {
         id: issue.id,
         severity: issue.severity,
         status: previous?.status === 'FIXED' ? 'OPEN' : previous?.status ?? 'OPEN',
+        problem: issue.problem,
+        recommendedFix: issue.recommendedFix,
       };
     }
   }
@@ -105,6 +122,10 @@ export class ReviewLoopCoordinator {
 
     const readyForReview = deterministicChecksPassed(execution) && hasCommit(execution);
     if (readyForReview) {
+      if (this.github.pushBranch) {
+        if (!execution.branch) throw new Error('Antigravity fix did not report the current branch.');
+        await this.github.pushBranch(execution.branch);
+      }
       this.markBlockingIssuesFixed(state, review);
     }
 
@@ -117,17 +138,94 @@ export class ReviewLoopCoordinator {
     return readyForReview;
   }
 
+  private async createCiCheckedHandoff(
+    state: WorkflowPersistedState,
+    prNumber: number,
+  ) {
+    try {
+      await this.github.waitForCi?.(prNumber, {
+        timeoutMs: this.policy.ciTimeoutMs ?? 15 * 60_000,
+        pollIntervalMs: this.policy.ciPollIntervalMs ?? 10_000,
+      });
+    } catch (error) {
+      if (!(error instanceof CiWaitTimeoutError)) throw error;
+      state.state = transition(state.state, 'NEEDS_HUMAN');
+      await this.persist(state);
+      return undefined;
+    }
+    return this.github.createHandoffPacket(prNumber);
+  }
+
+  private async publishReview(
+    prNumber: number,
+    phase: 'review' | 'clean-room',
+    iteration: number,
+    headSha: string,
+    review: ReviewResult,
+  ): Promise<void> {
+    await this.github.publishReviewComment?.(prNumber, {
+      phase,
+      iteration,
+      headSha,
+      verdict: review.verdict,
+      issues: review.issues,
+    });
+  }
+
+  private async fixCiFailure(
+    state: WorkflowPersistedState,
+    task: TaskContract,
+    prNumber: number,
+    headSha: string,
+    phase: 'review' | 'clean-room',
+  ): Promise<boolean> {
+    const review: ReviewResult = {
+      verdict: 'REQUEST_CHANGES',
+      issues: [{
+        id: `CI-${headSha.slice(0, 12)}`,
+        severity: 'P1',
+        problem: 'GitHub CI failed for the current PR head. Inspect the failing checks and logs, then fix the root cause.',
+        recommendedFix: `Use gh pr checks ${prNumber} and the relevant gh run logs before changing code.`,
+      }],
+    };
+    state.iteration += 1;
+    this.syncIssues(state, review);
+    await this.persist(state);
+    await this.publishReview(prNumber, phase, state.iteration, headSha, review);
+    return this.fixBlockingIssues(state, task, review);
+  }
+
   private async runCleanRoomReview(
     state: WorkflowPersistedState,
     task: TaskContract,
     prNumber: number,
+    context?: ReviewLoopContext,
   ): Promise<ReviewLoopResult | undefined> {
-    const cleanHandoff = await this.github.createHandoffPacket(prNumber);
+    const cleanHandoff = await this.createCiCheckedHandoff(state, prNumber);
+    if (!cleanHandoff) return { state: state.state, iteration: state.iteration };
+    if (cleanHandoff.pullRequest.ciState === 'FAILURE' && this.github.pushBranch) {
+      const fixed = await this.fixCiFailure(
+        state, task, prNumber, cleanHandoff.pullRequest.headSha, 'clean-room',
+      );
+      if (!fixed) return { state: state.state, iteration: state.iteration };
+      return undefined;
+    }
     const ciResult = await this.handleCiState(state, cleanHandoff.pullRequest.ciState);
     if (ciResult) return ciResult;
 
-    const finalReview = await this.cleanRoomReviewer.review(cleanHandoff);
+    const finalReview = await this.cleanRoomReviewer.review(
+      cleanHandoff,
+      undefined,
+      context?.cleanRoomProject,
+    );
     this.syncIssues(state, finalReview);
+    await this.publishReview(
+      prNumber,
+      'clean-room',
+      state.iteration,
+      cleanHandoff.pullRequest.headSha,
+      finalReview,
+    );
 
     const finalBlocking = finalReview.issues.filter(isBlocking);
     if (finalBlocking.length > 0) {
@@ -154,7 +252,11 @@ export class ReviewLoopCoordinator {
     };
   }
 
-  async run(task: TaskContract, prNumber: number): Promise<ReviewLoopResult> {
+  async run(
+    task: TaskContract,
+    prNumber: number,
+    context?: ReviewLoopContext,
+  ): Promise<ReviewLoopResult> {
     const state = await this.stateStore.load();
     state.prNumber = prNumber;
 
@@ -179,7 +281,7 @@ export class ReviewLoopCoordinator {
     }
 
     if (state.state === 'FINAL_REVIEW') {
-      const resumedFinalReview = await this.runCleanRoomReview(state, task, prNumber);
+      const resumedFinalReview = await this.runCleanRoomReview(state, task, prNumber, context);
       if (resumedFinalReview) return resumedFinalReview;
     }
 
@@ -193,15 +295,24 @@ export class ReviewLoopCoordinator {
 
       await this.persist(state);
 
-      const handoff = await this.github.createHandoffPacket(prNumber);
+      const handoff = await this.createCiCheckedHandoff(state, prNumber);
+      if (!handoff) return { state: state.state, iteration: state.iteration };
+      if (handoff.pullRequest.ciState === 'FAILURE' && this.github.pushBranch) {
+        const fixed = await this.fixCiFailure(
+          state, task, prNumber, handoff.pullRequest.headSha, 'review',
+        );
+        if (!fixed) return { state: state.state, iteration: state.iteration };
+        continue;
+      }
       const ciResult = await this.handleCiState(state, handoff.pullRequest.ciState);
       if (ciResult) return ciResult;
 
-      const review = await this.reviewer.review(handoff);
+      const review = await this.reviewer.review(handoff, undefined, context?.project);
       state.approval = undefined;
       state.iteration += 1;
       this.syncIssues(state, review);
       await this.persist(state);
+      await this.publishReview(prNumber, 'review', state.iteration, handoff.pullRequest.headSha, review);
 
       const blocking = review.issues.filter(isBlocking);
       if (blocking.length > 0) {
@@ -219,7 +330,7 @@ export class ReviewLoopCoordinator {
       state.state = transition(state.state, 'FINAL_REVIEW');
       await this.persist(state);
 
-      const finalResult = await this.runCleanRoomReview(state, task, prNumber);
+      const finalResult = await this.runCleanRoomReview(state, task, prNumber, context);
       if (finalResult) return finalResult;
     }
 

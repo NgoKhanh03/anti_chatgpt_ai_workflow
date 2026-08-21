@@ -16,10 +16,13 @@
 - Includes bounded project overview and progress in each ChatGPT review request.
 - Reuses one ChatGPT conversation per project and persists its conversation ID locally.
 - Keeps clean-room review isolation as a separate conversation-level concern.
+- Adds the workspace Antigravity skill `ai-workflow-runner` and its deterministic runner script.
+- Adds a production `agy --print` Antigravity transport with structured output and git-derived commit evidence.
+- Adds the resumable top-level workflow CLI for branch, coding, checks, push, PR creation, CI polling, ChatGPT review, fix/re-review and human handoff.
+- Publishes idempotent normal and clean-room review comments to the PR.
+- Uses a separate persistent ChatGPT conversation namespace for clean-room review.
 
 ## Remaining work
 
-- Wire a production coding-agent transport into the orchestrator.
-- Add PR creation/update, CI polling and review-comment publishing.
-- Add a top-level workflow CLI that coordinates coding, PR, review, fix and resume.
-- Add a dedicated clean-room conversation namespace.
+- Run a live clean-room validation against a disposable repository with real GitHub CI and a logged-in ChatGPT browser profile.
+- Add multi-unit plan scheduling on top of the current one-task-per-PR execution contract.

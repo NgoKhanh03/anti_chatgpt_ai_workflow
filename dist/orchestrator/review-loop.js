@@ -1,4 +1,5 @@
 import { deterministicChecksPassed, hasCommit, } from '../adapters/antigravity/index.js';
+import { CiWaitTimeoutError } from '../github/index.js';
 import { assertApprovalCurrent, createApprovalEvidence } from '../review/index.js';
 import { transition } from './workflow-state.js';
 function isBlocking(issue) {
@@ -38,6 +39,8 @@ export class ReviewLoopCoordinator {
                 id: issue.id,
                 severity: issue.severity,
                 status: previous?.status === 'FIXED' ? 'OPEN' : previous?.status ?? 'OPEN',
+                problem: issue.problem,
+                recommendedFix: issue.recommendedFix,
             };
         }
     }
@@ -72,6 +75,11 @@ export class ReviewLoopCoordinator {
         })));
         const readyForReview = deterministicChecksPassed(execution) && hasCommit(execution);
         if (readyForReview) {
+            if (this.github.pushBranch) {
+                if (!execution.branch)
+                    throw new Error('Antigravity fix did not report the current branch.');
+                await this.github.pushBranch(execution.branch);
+            }
             this.markBlockingIssuesFixed(state, review);
         }
         state.state = transition(state.state, 'TESTING');
@@ -81,13 +89,63 @@ export class ReviewLoopCoordinator {
         await this.persist(state);
         return readyForReview;
     }
-    async runCleanRoomReview(state, task, prNumber) {
-        const cleanHandoff = await this.github.createHandoffPacket(prNumber);
+    async createCiCheckedHandoff(state, prNumber) {
+        try {
+            await this.github.waitForCi?.(prNumber, {
+                timeoutMs: this.policy.ciTimeoutMs ?? 15 * 60_000,
+                pollIntervalMs: this.policy.ciPollIntervalMs ?? 10_000,
+            });
+        }
+        catch (error) {
+            if (!(error instanceof CiWaitTimeoutError))
+                throw error;
+            state.state = transition(state.state, 'NEEDS_HUMAN');
+            await this.persist(state);
+            return undefined;
+        }
+        return this.github.createHandoffPacket(prNumber);
+    }
+    async publishReview(prNumber, phase, iteration, headSha, review) {
+        await this.github.publishReviewComment?.(prNumber, {
+            phase,
+            iteration,
+            headSha,
+            verdict: review.verdict,
+            issues: review.issues,
+        });
+    }
+    async fixCiFailure(state, task, prNumber, headSha, phase) {
+        const review = {
+            verdict: 'REQUEST_CHANGES',
+            issues: [{
+                    id: `CI-${headSha.slice(0, 12)}`,
+                    severity: 'P1',
+                    problem: 'GitHub CI failed for the current PR head. Inspect the failing checks and logs, then fix the root cause.',
+                    recommendedFix: `Use gh pr checks ${prNumber} and the relevant gh run logs before changing code.`,
+                }],
+        };
+        state.iteration += 1;
+        this.syncIssues(state, review);
+        await this.persist(state);
+        await this.publishReview(prNumber, phase, state.iteration, headSha, review);
+        return this.fixBlockingIssues(state, task, review);
+    }
+    async runCleanRoomReview(state, task, prNumber, context) {
+        const cleanHandoff = await this.createCiCheckedHandoff(state, prNumber);
+        if (!cleanHandoff)
+            return { state: state.state, iteration: state.iteration };
+        if (cleanHandoff.pullRequest.ciState === 'FAILURE' && this.github.pushBranch) {
+            const fixed = await this.fixCiFailure(state, task, prNumber, cleanHandoff.pullRequest.headSha, 'clean-room');
+            if (!fixed)
+                return { state: state.state, iteration: state.iteration };
+            return undefined;
+        }
         const ciResult = await this.handleCiState(state, cleanHandoff.pullRequest.ciState);
         if (ciResult)
             return ciResult;
-        const finalReview = await this.cleanRoomReviewer.review(cleanHandoff);
+        const finalReview = await this.cleanRoomReviewer.review(cleanHandoff, undefined, context?.cleanRoomProject);
         this.syncIssues(state, finalReview);
+        await this.publishReview(prNumber, 'clean-room', state.iteration, cleanHandoff.pullRequest.headSha, finalReview);
         const finalBlocking = finalReview.issues.filter(isBlocking);
         if (finalBlocking.length > 0) {
             const fixed = await this.fixBlockingIssues(state, task, finalReview);
@@ -110,7 +168,7 @@ export class ReviewLoopCoordinator {
             review: finalReview,
         };
     }
-    async run(task, prNumber) {
+    async run(task, prNumber, context) {
         const state = await this.stateStore.load();
         state.prNumber = prNumber;
         if (state.state === 'HUMAN_APPROVAL' || state.state === 'NEEDS_HUMAN' || state.state === 'MERGED') {
@@ -130,7 +188,7 @@ export class ReviewLoopCoordinator {
             throw new Error(`Review loop cannot start from ${state.state}; a tested pull request is required.`);
         }
         if (state.state === 'FINAL_REVIEW') {
-            const resumedFinalReview = await this.runCleanRoomReview(state, task, prNumber);
+            const resumedFinalReview = await this.runCleanRoomReview(state, task, prNumber, context);
             if (resumedFinalReview)
                 return resumedFinalReview;
         }
@@ -143,15 +201,24 @@ export class ReviewLoopCoordinator {
                 state.state = transition(state.state, 'AI_REVIEWING');
             }
             await this.persist(state);
-            const handoff = await this.github.createHandoffPacket(prNumber);
+            const handoff = await this.createCiCheckedHandoff(state, prNumber);
+            if (!handoff)
+                return { state: state.state, iteration: state.iteration };
+            if (handoff.pullRequest.ciState === 'FAILURE' && this.github.pushBranch) {
+                const fixed = await this.fixCiFailure(state, task, prNumber, handoff.pullRequest.headSha, 'review');
+                if (!fixed)
+                    return { state: state.state, iteration: state.iteration };
+                continue;
+            }
             const ciResult = await this.handleCiState(state, handoff.pullRequest.ciState);
             if (ciResult)
                 return ciResult;
-            const review = await this.reviewer.review(handoff);
+            const review = await this.reviewer.review(handoff, undefined, context?.project);
             state.approval = undefined;
             state.iteration += 1;
             this.syncIssues(state, review);
             await this.persist(state);
+            await this.publishReview(prNumber, 'review', state.iteration, handoff.pullRequest.headSha, review);
             const blocking = review.issues.filter(isBlocking);
             if (blocking.length > 0) {
                 const fixed = await this.fixBlockingIssues(state, task, review);
@@ -166,7 +233,7 @@ export class ReviewLoopCoordinator {
             }
             state.state = transition(state.state, 'FINAL_REVIEW');
             await this.persist(state);
-            const finalResult = await this.runCleanRoomReview(state, task, prNumber);
+            const finalResult = await this.runCleanRoomReview(state, task, prNumber, context);
             if (finalResult)
                 return finalResult;
         }

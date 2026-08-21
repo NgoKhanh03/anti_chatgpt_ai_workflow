@@ -7,6 +7,7 @@ import { AntigravityAdapter } from '../dist/adapters/index.js';
 import { ReviewLoopCoordinator } from '../dist/orchestrator/index.js';
 import { StateStore } from '../dist/state/index.js';
 import { createApprovalEvidence } from '../dist/review/index.js';
+import { CiWaitTimeoutError } from '../dist/github/index.js';
 
 const task = {
   task: {
@@ -245,6 +246,27 @@ test('pending CI pauses in AI_REVIEWING without invoking reviewer', async () => 
     const result = await coordinator.run(task, 5);
     assert.equal(result.state, 'AI_REVIEWING');
     assert.equal(result.iteration, 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('CI polling timeout persists NEEDS_HUMAN', async () => {
+  const { dir, store } = await createStore('PR_CREATED');
+  try {
+    const github = new FakeGitHub();
+    github.waitForCi = async () => { throw new CiWaitTimeoutError(5, 10); };
+    const coordinator = new ReviewLoopCoordinator(
+      github,
+      new SequenceReviewer([]),
+      new SequenceReviewer([]),
+      new AntigravityAdapter(new PassingAntigravityTransport()),
+      store,
+      { maxIterations: 5, ciTimeoutMs: 10, ciPollIntervalMs: 1 },
+    );
+    const result = await coordinator.run(task, 5);
+    assert.equal(result.state, 'NEEDS_HUMAN');
+    assert.equal((await store.load()).state, 'NEEDS_HUMAN');
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

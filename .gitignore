@@ -6,3 +6,4 @@
 *.tmp
 node_modules/
 .ai/project-conversations.json
+.ai/runs/

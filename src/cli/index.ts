@@ -1,1 +1,3 @@
-console.log('AI Workflow orchestrator scaffold ready.');
+import { runWorkflowCli } from './workflow.js';
+
+await runWorkflowCli();
