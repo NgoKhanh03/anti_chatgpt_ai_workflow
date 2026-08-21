@@ -30,7 +30,7 @@ class FakeRunner {
           baseRefOid: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
           body: 'Implements demo feature',
           author: { login: 'bot' },
-          statusCheckRollup: [{ conclusion: 'SUCCESS' }],
+          statusCheckRollup: [{ state: 'SUCCESS' }],
         }),
         stderr: '',
       };

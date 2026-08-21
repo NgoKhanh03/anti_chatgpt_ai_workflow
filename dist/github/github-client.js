@@ -1,7 +1,7 @@
 function deriveCiState(checks) {
     if (!checks || checks.length === 0)
         return 'UNKNOWN';
-    const values = checks.map((check) => String(check.conclusion || check.status || '').toUpperCase());
+    const values = checks.map((check) => String(check.conclusion || check.status || check.state || '').toUpperCase());
     if (values.some((value) => ['FAILURE', 'ERROR', 'CANCELLED', 'TIMED_OUT'].includes(value))) {
         return 'FAILURE';
     }

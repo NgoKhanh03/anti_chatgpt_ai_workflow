@@ -20,7 +20,7 @@ interface GhPrView {
   baseRefOid: string;
   body?: string;
   author?: { login?: string };
-  statusCheckRollup?: Array<{ conclusion?: string; status?: string }>;
+  statusCheckRollup?: Array<{ conclusion?: string; status?: string; state?: string }>;
   comments?: Array<{ body?: string }>;
 }
 
@@ -34,7 +34,7 @@ function deriveCiState(checks: GhPrView['statusCheckRollup']): CiState {
   if (!checks || checks.length === 0) return 'UNKNOWN';
 
   const values = checks.map((check) =>
-    String(check.conclusion || check.status || '').toUpperCase(),
+    String(check.conclusion || check.status || check.state || '').toUpperCase(),
   );
 
   if (values.some((value) => ['FAILURE', 'ERROR', 'CANCELLED', 'TIMED_OUT'].includes(value))) {
